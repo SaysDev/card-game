@@ -25,7 +25,7 @@ export class GameRoomService {
    * Join a game room by ID
    * This adds proper validation and prefixes the room ID if needed
    */
-  public static joinRoom(roomId: string): void {
+      public static joinRoom(roomId: string | number): void {
     if (!gameState.isAuthenticated) {
       console.error('Cannot join room: User not authenticated');
 
@@ -36,7 +36,7 @@ export class GameRoomService {
         // Set up listener for authentication success
         const authListener = () => {
           console.log('Authentication successful, now joining room');
-          WebSocketService.joinRoom(roomId);
+          WebSocketService.joinRoom(String(roomId));
           WebSocketService.off('authenticated', authListener);
         };
 
@@ -55,7 +55,7 @@ export class GameRoomService {
 
     // Always try with just the original room ID - server now handles prefix detection
     console.log(`GameRoomService: Joining room ${roomId}`);
-    WebSocketService.joinRoom(roomId);
+    WebSocketService.joinRoom(String(roomId));
   }
 
   /**

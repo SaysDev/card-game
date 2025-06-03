@@ -17,6 +17,8 @@ interface GameState {
     isYourTurn: boolean;
     // Track if the user is authenticated
     isAuthenticated: boolean;
+    // Track player ready status
+    playerReady: boolean;
 }
 
 interface Player {
@@ -64,7 +66,7 @@ export class WebSocketService {
     private reconnectTimeout: number = 1000; // Start with 1s, will increase
     private eventListeners: Map<string, Function[]> = new Map();
     private url: string;
-    private userId: number | null = null;
+    private userId: string | number | null = null;
     private username: string | null = null;
     private authToken: string | null = null;
 
@@ -75,24 +77,51 @@ export class WebSocketService {
     }
 
     /**
+     * Setup listeners for player status updates
+     */
+
+    /**
      * Connect to the WebSocket server
      */
-    public connect(userId: number, username: string, token: string): void {
-        console.log('Connecting to WebSocket server...');
-        // Even if already connected, update credentials in case the user changed
+            public connect(userId: number | string, username: string, token: string): void {
+        // Try to use a more reliable user ID source if available
+        try {
+            // @ts-ignore - Inertia might not be available in all contexts
+            if (window.Inertia && window.Inertia.page && window.Inertia.page.props.auth && window.Inertia.page.props.auth.user) {
+                // @ts-ignore
+                const inertiaUserId = window.Inertia.page.props.auth.user.id;
+                if (inertiaUserId) {
+                    console.log('Using user ID from Inertia page props in connect method:', inertiaUserId);
+                    userId = inertiaUserId;
+                    // @ts-ignore
+                    username = window.Inertia.page.props.auth.user.name || username;
+                }
+            }
+        } catch (error) {
+            console.warn('Could not access Inertia page props in connect method:', error);
+        }
+
+        // Validate userId to ensure it's not 0, undefined, null, or an empty string
+        if (!userId || userId === 0 || userId === '0') {
+            console.error('Invalid user ID provided:', userId);
+            this.emit('auth_error', { message: 'Invalid user ID provided' });
+            return;
+        }
+
+        // Use the explicitly provided userId - don't try to override it
+        // This ensures we use the ID passed from the calling component
         this.userId = userId;
-        this.username = username;
+        this.username = username || `User_${userId}`;
         this.authToken = token;
+
+        // Log the user ID we're using
+        console.log('Connecting to WebSocket with user ID:', this.userId, 'Type:', typeof this.userId);
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             console.log('WebSocket is already connected - re-authenticating with new credentials');
             this.authenticate();
             return;
         }
-
-        this.userId = userId;
-        this.username = username;
-        this.authToken = token;
 
         try {
             this.ws = new WebSocket(this.url);
@@ -131,18 +160,50 @@ export class WebSocketService {
 
     /**
      * Authenticate with the server
+     * Changed to public to allow manual authentication after connection
      */
-    private authenticate(): void {
+    public authenticate(): void {
+        try {
+            // Try to get user ID from Inertia directly (more reliable method)
+            const usePage = () => {
+                // @ts-ignore - Inertia might not be available in all contexts
+                if (window.Inertia && window.Inertia.page) {
+                    // @ts-ignore
+                    return window.Inertia.page;
+                }
+                return { props: { auth: { user: null } } };
+            };
+
+            const page = usePage();
+            if (page.props.auth && page.props.auth.user && page.props.auth.user.id) {
+                this.userId = page.props.auth.user.id;
+                this.username = page.props.auth.user.name || `User_${this.userId}`;
+                console.log('Using user ID from Inertia page props:', this.userId);
+            }
+        } catch (error) {
+            console.warn('Could not access Inertia page props:', error);
+        }
+
         if (!this.userId || !this.username || !this.authToken) {
             console.error('Missing authentication information');
             this.emit('auth_error', { message: 'Missing authentication information' });
             return;
         }
 
+        // Don't provide a default user ID - it must be explicitly provided
+        // This prevents unexpected authentication with wrong user IDs
+        if (!this.userId) {
+            console.error('No valid user ID for authentication');
+            this.emit('auth_error', { message: 'No valid user ID for authentication' });
+            return;
+        }
+
+        // Use the directly provided user ID and username
+        // This is more reliable than trying to access global auth objects
         console.log(`Authenticating user ${this.username} (${this.userId})`);
         this.send({
             action: 'authenticate',
-            user_id: this.userId.toString(), // Ensure user_id is sent as string
+            user_id: String(this.userId), // Always send as string
             username: this.username,
             token: this.authToken
         });
@@ -208,6 +269,81 @@ export class WebSocketService {
     }
 
     /**
+     * Create a new game room
+     */
+    public createRoom(roomName: string, maxPlayers: number = 4): void {
+        if (!gameState.isAuthenticated) {
+            console.error('Cannot create room: Not authenticated');
+            return;
+        }
+
+        this.send({
+            action: 'create_room',
+            room_name: roomName,
+            max_players: maxPlayers
+        });
+    }
+
+    /**
+     * Join a game room by ID
+     */
+    public joinRoom(roomId: string): void {
+        if (!gameState.isAuthenticated) {
+            console.error('Cannot join room: Not authenticated');
+            return;
+        }
+
+        this.send({
+            action: 'join_room',
+            room_id: roomId
+        });
+    }
+
+    /**
+     * Leave the current room
+     */
+    public leaveRoom(): void {
+        if (!gameState.roomId) {
+            console.error('Cannot leave room: Not in a room');
+            return;
+        }
+
+        this.send({
+            action: 'leave_room'
+        });
+    }
+
+    /**
+     * List available game rooms
+     */
+    public listRooms(): void {
+        if (!gameState.isAuthenticated) {
+            console.error('Cannot list rooms: Not authenticated');
+            return;
+        }
+
+        this.send({
+            action: 'list_rooms'
+        });
+    }
+
+    /**
+     * Set player ready status
+     */
+    public setReadyStatus(ready: boolean): void {
+        if (!gameState.roomId) {
+            console.error('Cannot set ready status: Not in a room');
+            return;
+        }
+
+        this.send({
+            action: 'set_ready_status',
+            ready: ready,
+            room_id: gameState.roomId
+        });
+    }
+
+    /**
      * Send data to the server
      */
     public send(data: GameAction): void {
@@ -229,6 +365,35 @@ export class WebSocketService {
             console.error('Error sending message:', error);
             this.emit('server_error', { message: 'Błąd wysyłania wiadomości do serwera' });
         }
+    }
+
+    /**
+     * Check if WebSocket is connected and authenticated
+     */
+    public isConnectedAndReady(): boolean {
+        return this.ws !== null &&
+               this.ws.readyState === WebSocket.OPEN &&
+               gameState.isAuthenticated;
+    }
+
+    /**
+     * Get current connection status information
+     */
+    public getConnectionStatus(): object {
+        return {
+            hasWebSocket: this.ws !== null,
+            readyState: this.ws ? this.ws.readyState : null,
+            isAuthenticated: gameState.isAuthenticated,
+            connected: gameState.connected,
+            roomId: gameState.roomId
+        };
+    }
+
+    /**
+     * Check if WebSocket is connected
+     */
+    public isConnected(): boolean {
+        return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
     }
 
     /**
@@ -269,6 +434,69 @@ export class WebSocketService {
     }
 
     /**
+     * Play a card
+     */
+    public playCard(cardIndex: number): void {
+        if (!gameState.roomId) {
+            console.error('Cannot play card: Not in a room');
+            return;
+        }
+
+        this.send({
+            action: 'play_card',
+            card_index: cardIndex
+        });
+    }
+
+    /**
+     * Start the game (only room creator can do this)
+     */
+    startGame(): void {
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            console.error('Cannot start game: WebSocket is not connected');
+            return;
+        }
+
+        if (!gameState.isRoomCreator) {
+            console.error('Cannot start game: User is not the room creator');
+            return;
+        }
+
+        this.socket.send(JSON.stringify({
+            action: 'start_game',
+            room_id: gameState.roomId
+        }));
+    }
+
+    /**
+     * Draw a card from the deck
+     */
+    public drawCard(): void {
+        if (!gameState.roomId) {
+            console.error('Cannot draw card: Not in a room');
+            return;
+        }
+
+        this.send({
+            action: 'draw_card'
+        });
+    }
+
+    /**
+     * Pass the turn
+     */
+    public passTurn(): void {
+        if (!gameState.roomId) {
+            console.error('Cannot pass turn: Not in a room');
+            return;
+        }
+
+        this.send({
+            action: 'pass_turn'
+        });
+    }
+
+    /**
      * Handle incoming messages
      */
     private handleMessage(data: string): void {
@@ -283,12 +511,24 @@ export class WebSocketService {
                     break;
 
                 case 'auth_success':
-                    // Store user ID from server response, which could be different from client-side ID
-                    this.userId = message.user_id;
-                    gameState.connectionId = message.user_id.toString();
+                    // Parse the message to ensure we have access to the user_id
+                    const parsedMessage = typeof message === 'string' ? JSON.parse(message) : message;
+                    console.log('Received auth_success with data:', JSON.stringify(parsedMessage));
+
+                    // Always use the user ID returned by the server - this is the authoritative source
+                    if (parsedMessage && typeof parsedMessage === 'object') {
+                        // The server sends user_id directly in the response object
+                        if (parsedMessage.user_id !== undefined) {
+                            // Make sure to convert to number for consistent handling
+                            this.userId = parseInt(String(parsedMessage.user_id), 10);
+                            console.log(`Using authoritative user ID from server: ${this.userId} (converted to number)`);
+                        }
+                    }
+
+                    gameState.connectionId = this.userId ? String(this.userId) : null;
                     gameState.isAuthenticated = true;
-                    console.log('Authentication successful. User ID from server:', message.user_id);
-                    this.emit('authenticated', message);
+                    console.log('Authentication successful with user ID:', this.userId, 'Type:', typeof this.userId);
+                    this.emit('authenticated', parsedMessage);
                     break;
 
                 case 'room_created':
@@ -371,6 +611,8 @@ export class WebSocketService {
                     gameState.roomName = null;
                     gameState.players = [];
                     gameState.hand = [];
+                    gameState.isPlayer = false; // Reset isPlayer state
+                    gameState.isRoomCreator = false; // Reset isRoomCreator state
                     gameState.status = 'waiting';
                     this.emit('left_room', message);
                     break;
@@ -488,23 +730,14 @@ export class WebSocketService {
         }
     }
 
-    // Game action methods
+    // Game action methods - implementations are already provided above
+    // The methods below are enhanced versions of the ones defined earlier
 
     /**
-     * Create a new game room
+     * Enhanced version of joinRoom with additional checks and user info
+     * @param roomId The ID of the room to join
      */
-    public createRoom(roomName: string, maxPlayers: number): void {
-        this.send({
-            action: 'create_room',
-            room_name: roomName,
-            max_players: maxPlayers
-        });
-    }
-
-    /**
-     * Join an existing game room
-     */
-    public joinRoom(roomId: string): void {
+    public joinRoomWithUserInfo(roomId: string): void {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             console.error('Cannot join room: WebSocket is not connected');
             this.emit('error', { message: 'Cannot join room: WebSocket is not connected' });
@@ -529,49 +762,19 @@ export class WebSocketService {
         });
     }
 
-    /**
-     * Leave the current game room
-     */
-    public leaveRoom(): void {
-        if (!gameState.roomId) return;
+    // Note: isConnectedAndReady is already defined above
 
-        this.send({
-            action: 'leave_room'
-        });
-    }
+    // Note: getConnectionStatus is already defined above
 
     /**
-     * List available game rooms
+     * Play a card from your hand - enhanced version with turn checking
      */
-    public listRooms(): void {
-        this.send({
-            action: 'list_rooms'
-        });
-    }
-
-    /**
-     * Check if WebSocket is connected and ready
-     */
-    public isConnectedAndReady(): boolean {
-        return !!this.ws && this.ws.readyState === WebSocket.OPEN;
-    }
-
-    /**
-     * Get WebSocket connection status details
-     */
-    public getConnectionStatus(): { connected: boolean, readyState: number | null, authenticated: boolean } {
-        return {
-            connected: !!this.ws,
-            readyState: this.ws ? this.ws.readyState : null,
-            authenticated: gameState.isAuthenticated
-        };
-    }
-
-    /**
-     * Play a card from your hand
-     */
-    public playCard(cardIndex: number): void {
-        if (!gameState.isYourTurn) return;
+    public playCardInTurn(cardIndex: number): void {
+        if (!gameState.isYourTurn) {
+            console.warn('Cannot play card: Not your turn');
+            this.emit('server_error', { message: 'Nie możesz zagrać karty: To nie jest twoja tura' });
+            return;
+        }
 
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             console.error('Cannot play card: WebSocket is not connected');
@@ -585,63 +788,7 @@ export class WebSocketService {
         });
     }
 
-    /**
-     * Draw a card from the deck
-     */
-    public drawCard(): void {
-        if (!gameState.isYourTurn) return;
-
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            console.error('Cannot draw card: WebSocket is not connected');
-            return;
-        }
-
-        this.send({
-            action: 'game_action',
-            action_type: 'draw_card'
-        });
-    }
-
-    /**
-     * Pass your turn
-     */
-    public passTurn(): void {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            console.error('Cannot pass turn: WebSocket is not connected');
-            return;
-        }
-
-        if (!gameState.isYourTurn) return;
-
-        this.send({
-            action: 'game_action',
-            action_type: 'pass_turn'
-        });
-    }
-
-    /**
-     * Set player ready status
-     */
-    public setReadyStatus(isReady: boolean): void {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            console.error('Cannot set ready status: WebSocket is not connected');
-            return;
-        }
-
-        if (!gameState.roomId) {
-            console.error('Cannot set ready status: Not in a room');
-            return;
-        }
-
-        this.send({
-            action: 'set_ready_status',
-            ready: isReady,
-            room_id: gameState.roomId // Add room_id to the request
-        });
-
-        // Don't update local state immediately, wait for server confirmation
-        // The state will be updated when we receive the 'ready_status_updated' event
-    }
+    // Note: setReadyStatus is already defined above
 
     // Listen for player status updates
     private setupPlayerStatusListener(): void {

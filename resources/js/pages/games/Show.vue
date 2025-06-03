@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Head, Link } from '@inertiajs/vue3';
+import { Head, Link, usePage } from '@inertiajs/vue3';
 import { ref, onMounted, computed, onBeforeUnmount } from 'vue';
 import GameBoard from '@/components/game/GameBoard.vue';
 import { useWebSocket } from '@/composables/useWebSocket';
@@ -7,8 +7,15 @@ import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/composables/useAuth';
 import { useInitials } from '@/composables/useInitials';
 import WebSocketService, { gameState } from '@/Services/WebSocketService';
-
 import { GameRoomService } from '@/Services/GameRoomService';
+
+// Get Inertia shared data
+const page = usePage();
+const inertiaUser = computed(() => page.props.auth?.user);
+
+// Track if current player is in game (reactive to WebSocket events)
+const isCurrentPlayerInGame = ref(false);
+
 const props = defineProps<{
   game: {
     id: number;
@@ -49,6 +56,8 @@ const { user } = useAuth();
 const { getInitials } = useInitials();
 
 const gameStarted = ref(props.game.game_data.game_started);
+// Initialize based on the prop value from the server
+isCurrentPlayerInGame.value = props.isPlayer;
 const playerReady = computed({
   get: () => gameState.playerReady,
   set: (value) => { gameState.playerReady = value; }
@@ -62,12 +71,45 @@ const isCurrentUserTurn = computed(() => {
   return playerIndex === props.game.game_data.current_turn;
 });
 
+// Check if current user is the room creator
+const isRoomCreator = computed(() => {
+  return gameState.isRoomCreator;
+});
+
+// Count ready players for the Start Game button
+const readyPlayersCount = computed(() => {
+  if (!gameState.players || !gameState.players.length) return 0;
+  return gameState.players.filter(player => player.status === 'ready').length;
+});
+
 onMounted(() => {
   // Check if this game is the user's active game
   const inThisGame = props.isPlayer;
 
+  // Get the authenticated user ID from Inertia shared data
+  let authenticatedUserId;
+
+  try {
+    // Use the computed inertiaUser instead of directly accessing page.props
+    if (inertiaUser.value) {
+      authenticatedUserId = inertiaUser.value.id;
+      console.log('Using authenticated user ID from Inertia shared data:', authenticatedUserId);
+    }
+    // Fall back to user from composable if needed
+    else if (user.value) {
+      authenticatedUserId = user.value.id;
+      console.log('Using authenticated user ID from composable:', authenticatedUserId);
+    }
+
+    if (!authenticatedUserId) {
+      console.warn('No authenticated user ID found from any source');
+    }
+  } catch (error) {
+    console.warn('Could not access authenticated user data:', error);
+  }
+
   // Connect to WebSocket server using the WebSocketService singleton
-  if (user.value) {
+  if (authenticatedUserId) {
     // First register event handlers
     WebSocketService.on('connected', () => {
       console.log('WebSocket connected, authenticated next');
@@ -86,11 +128,11 @@ onMounted(() => {
         // If game.room_id exists, use it instead of the game.id
         if (props.game.room_id !== undefined) {
           console.log('Using explicit room_id from game object:', props.game.room_id);
-          WebSocketService.joinRoom(props.game.room_id);
+          WebSocketService.joinRoom(String(props.game.room_id));
         } else {
           // Otherwise use the game ID
           // Import and use GameRoomService for better room handling
-          GameRoomService.joinRoom(roomId);
+          GameRoomService.joinRoom(String(roomId));
         }
       } else {
         console.log('Not joining a room - not a player or no game ID', {
@@ -105,6 +147,9 @@ onMounted(() => {
         title: 'Dołączono do pokoju',
         description: `Dołączono do pokoju: ${data.room_name}`,
       });
+
+      // Update local state to reflect that the player has joined
+      isCurrentPlayerInGame.value = true;
 
       // Log players data for debugging
       console.log('Room joined, received players data:', data.players);
@@ -178,12 +223,35 @@ onMounted(() => {
       // If you want to redirect to a list of games or create a new room
       // You can do it here
     });
+      } else {
+    // Handle case where no authenticated user is available
+    console.error('No authenticated user available to connect to WebSocket');
+    toast({
+      title: 'Błąd autoryzacji',
+      description: 'Nie można nawiązać połączenia - brak zalogowanego użytkownika',
+      variant: 'destructive',
+    });
+      }
 
-    // Now connect to the WebSocket server
-    console.log('Connecting to WebSocket with user ID:', user.value.id, 'Type:', typeof user.value.id);
-    WebSocketService.connect(user.value.id, user.value.name, 'token');
-  }
-});
+    // Use inertiaUser from usePage() directly
+    const userName = inertiaUser.value ? inertiaUser.value.name : 'Guest';
+
+    // Connect using the inertiaUser or authenticatedUserId if already determined
+    if (inertiaUser.value?.id) {
+      console.log('Connecting to WebSocket with user ID from Inertia:', inertiaUser.value.id);
+      WebSocketService.connect(String(inertiaUser.value.id), userName, 'token');
+    } else if (authenticatedUserId) {
+      console.log('Connecting to WebSocket with fallback user ID:', authenticatedUserId);
+      WebSocketService.connect(String(authenticatedUserId), userName, 'token');
+    } else {
+      console.error('Cannot connect to WebSocket: No valid user ID available');
+      toast({
+        title: 'Błąd połączenia',
+        description: 'Nie można połączyć się z serwerem - brak identyfikatora użytkownika',
+        variant: 'destructive',
+      });
+    }
+  });
 
 const toggleReady = () => {
   // First check if WebSocketService is available and connected
@@ -304,9 +372,77 @@ const handlePassTurn = () => {
   WebSocketService.passTurn();
 };
 
+// Handle starting the game (only room creator can do this)
+const handleStartGame = () => {
+  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
+    toast({
+      title: 'Błąd połączenia',
+      description: 'Nie można rozpocząć gry - brak połączenia z serwerem.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  // Check if we're the room creator
+  if (!gameState.isRoomCreator) {
+    toast({
+      title: 'Błąd',
+      description: 'Tylko twórca pokoju może rozpocząć grę.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  // Check if there are enough players who are ready
+  const readyPlayers = gameState.players.filter(p => p.status === 'ready').length;
+  if (readyPlayers < 2) {
+    toast({
+      title: 'Za mało graczy',
+      description: 'Do rozpoczęcia gry potrzeba co najmniej 2 gotowych graczy.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  // Start the game
+  WebSocketService.startGame();
+
+  toast({
+    title: 'Rozpoczynanie gry',
+    description: 'Rozpoczynanie gry w toku...',
+  });
+};
+
+// Handle joining a game room
+const handleJoinRoom = () => {
+  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
+    toast({
+      title: 'Błąd połączenia',
+      description: 'Nie można dołączyć do gry - brak połączenia z serwerem.',
+      variant: 'destructive',
+    });
+    return;
+  }
+
+  if (props.game?.id) {
+    // Start joining process
+    toast({
+      title: 'Dołączanie do gry',
+      description: 'Trwa dołączanie do pokoju gry...',
+    });
+
+    // Use room_id if available, otherwise use game.id
+    const roomId = props.game.room_id || props.game.id.toString();
+    WebSocketService.joinRoom(String(roomId));
+  }
+};
+
 // Connection refresh method
 const refreshConnection = () => {
-  if (!user.value) {
+  // Get user ID from our computed inertiaUser
+  const userId = inertiaUser.value?.id;
+
+  if (!userId) {
     toast({
       title: 'Błąd',
       description: 'Brak informacji o użytkowniku do ponownego połączenia',
@@ -332,7 +468,8 @@ const refreshConnection = () => {
 
       // Then reconnect
       setTimeout(() => {
-        WebSocketService.connect(user.value.id, user.value.name, 'token');
+        const userName = inertiaUser.value?.name || 'User';
+        WebSocketService.connect(String(userId), userName, 'token');
       }, 500);
     } else {
       toast({
@@ -340,6 +477,20 @@ const refreshConnection = () => {
         description: 'Połączenie z serwerem aktywne',
       });
     }
+  }
+};
+
+// Handle player leaving a room
+const handleLeaveRoom = () => {
+  if (gameState.roomId) {
+    WebSocketService.leaveRoom();
+    // Update local state to reflect that the player has left
+    isCurrentPlayerInGame.value = false;
+
+    toast({
+      title: 'Opuszczono pokój',
+      description: 'Opuściłeś pokój gry',
+    });
   }
 };
 
@@ -424,14 +575,15 @@ onBeforeUnmount(() => {
               Powrót do listy gier
             </Link>
 
-            <template v-if="isPlayer">
+                          <template v-if="isCurrentPlayerInGame">
               <button
-                @click="WebSocketService.leaveRoom()"
+                @click="handleLeaveRoom"
                 class="inline-flex items-center px-4 py-2 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-500 active:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150"
               >
                 Opuść grę
               </button>
 
+              <!-- Ready status button for all players -->
               <button
                 @click="toggleReady"
                 :class="{
@@ -442,11 +594,23 @@ onBeforeUnmount(() => {
               >
                 {{ playerReady ? 'Nie jestem gotowy' : 'Jestem gotowy' }}
               </button>
+
+              <!-- Start game button only for room creator -->
+              <button
+                v-if="isRoomCreator"
+                @click="handleStartGame"
+                class="inline-flex items-center px-4 py-2 bg-indigo-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-indigo-500 active:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition ease-in-out duration-150"
+                :disabled="readyPlayersCount < 2"
+                :title="readyPlayersCount < 2 ? 'Potrzeba co najmniej 2 gotowych graczy' : 'Rozpocznij grę'"
+                :class="{ 'opacity-50 cursor-not-allowed': readyPlayersCount < 2 }"
+              >
+                Rozpocznij grę ({{ readyPlayersCount }}/{{ gameState.players.length }})
+              </button>
             </template>
 
-            <template v-else-if="canJoin">
+            <template v-else-if="canJoin && !isCurrentPlayerInGame">
               <button
-                @click="WebSocketService.joinRoom(game.id.toString())"
+                @click="handleJoinRoom"
                 class="inline-flex items-center px-4 py-2 bg-green-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-green-500 active:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition ease-in-out duration-150"
               >
                 Dołącz do gry

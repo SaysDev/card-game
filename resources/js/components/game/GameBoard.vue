@@ -28,7 +28,7 @@ interface Player {
 }
 
 // Define props for WebSocket integration
-defineProps({
+const props = defineProps({
   hand: {
     type: Array,
     default: () => []
@@ -308,7 +308,21 @@ onMounted(() => {
 
     // If user is logged in, authenticate with WebSocket server
     if (isLoggedIn.value && user.value) {
-        authenticate(user.value.id, user.value.name, 'demo-token');
+        // Get user ID directly from the user object and ensure it's correctly typed
+        const userId = user.value.id;
+        console.log('Authenticating with WebSocket using user ID:', userId, 'Type:', typeof userId);
+
+        // Use the specific user ID, not a fallback
+        if (userId !== undefined && userId !== null) {
+            authenticate(userId, user.value.name, 'demo-token');
+        } else {
+            console.error('Cannot authenticate: user.value.id is undefined or null');
+            toast({
+                title: 'Błąd autoryzacji',
+                description: 'Nie można połączyć się z serwerem - nieprawidłowy identyfikator użytkownika',
+                variant: 'destructive',
+            });
+        }
     }
 });
 </script>

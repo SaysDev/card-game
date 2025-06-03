@@ -16,6 +16,10 @@ class AuthenticationHandler
 
     public function handleAuthentication(Server $server, int $fd, array $data): void
     {
+        // Log the incoming authentication data for debugging
+        error_log('Authentication data received: ' . json_encode($data));
+        echo "[websocket] Authentication data received: " . json_encode($data) . "\n";
+
         if (!isset($data['user_id'], $data['username'], $data['token'])) {
             $server->push($fd, json_encode([
                 'type' => 'auth_error',
@@ -27,22 +31,26 @@ class AuthenticationHandler
         // In production, validate token here with Laravel Auth
         // For demo, we'll assume the token is valid
 
-        $userId = (int) $data['user_id'];
+        // Always convert user_id to integer for storage since the Table column is TYPE_INT
+        $userId = (int)$data['user_id'];
+
+        // Log the converted user ID
+        echo "Received auth request with user_id: {$userId} (converted to int)\n";
         $username = $data['username'];
 
-        // Update connection with user info
+        // Update connection with user info - ensure user_id is an integer
         $this->storage->setConnection($fd, [
             'fd' => $fd,
-            'user_id' => $userId,
+            'user_id' => $userId, // Now $userId is already cast to int
             'connected_at' => time()
         ]);
 
         // Check if user was in an active game room
         $this->reconnectToActiveRoom($server, $fd, $userId);
 
-        // Create player record
+        // Create player record - $userId is now properly cast to int
         $this->storage->setPlayer($fd, [
-            'user_id' => $userId,
+            'user_id' => $userId, // Already cast to int above
             'username' => $username,
             'room_id' => '',
             'status' => 'online',
@@ -51,11 +59,22 @@ class AuthenticationHandler
             'last_activity' => time()
         ]);
 
-        $server->push($fd, json_encode([
+        // Echo the user ID for debugging
+        echo "Sending auth_success with user_id: {$userId}\n";
+        echo "[websocket] Sending auth_success with user_id: {$userId}\n";
+
+        // Prepare auth response
+        $authResponse = [
             'type' => 'auth_success',
-            'user_id' => $userId,
+            'user_id' => $userId, // Will be converted to string in JSON
             'username' => $username
-        ]));
+        ];
+
+        // Send a response with user_id - can be sent as string in JSON
+        $server->push($fd, json_encode($authResponse));
+
+        // Log that authentication was successful
+        echo "[websocket] Authentication successful for user {$username} (ID: {$userId})\n";
     }
 
     /**
