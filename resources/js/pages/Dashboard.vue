@@ -58,6 +58,19 @@ function runPerformanceDemo() {
                 Wkrótce dostępne
               </button>
             </div>
+
+            <div class="p-6 bg-gray-100 dark:bg-gray-700 rounded-lg shadow-md hover:shadow-lg transition-all">
+              <h2 class="text-xl font-medium mb-4">Wyloguj się</h2>
+              <p class="text-gray-600 dark:text-gray-400 mb-4">Zakończ swoją sesję i wyloguj się z systemu.</p>
+              <Link
+                :href="route('logout')"
+                method="post"
+                as="button"
+                class="inline-flex items-center px-4 py-2 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-700 focus:bg-red-700 active:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150"
+              >
+                Wyloguj
+              </Link>
+            </div>
           </div>
 
           <div class="mt-8 p-4 bg-yellow-50 dark:bg-yellow-900/30 rounded-lg border border-yellow-200 dark:border-yellow-800">

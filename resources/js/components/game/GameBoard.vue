@@ -4,7 +4,7 @@ import CardPicker from '@/components/game/CardPicker.vue';
 import PlayerHand from '@/components/game/PlayerHand.vue';
 import PickerCard from '@/components/game/PickerCard.vue';
 import PlayerInfo from '@/components/game/PlayerInfo.vue';
-import WebSocketService, { gameState } from '@/Services/WebSocketService';
+import { webSocketService } from '@/Services/WebSocketService';
 import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/composables/useAuth';
 import { useWebSocket } from '@/composables/useWebSocket';
@@ -73,19 +73,19 @@ const gameMessage = ref<string>('');
 const { toast } = useToast();
 
 // Initialize WebSocket service
-const {
-    isConnected,
-    authenticate,
-    createRoom,
-    joinRoom,
-    leaveRoom: wsLeaveRoom,
-    listRooms,
-    playCard,
-    drawCard,
-    passTurn,
-    on,
-    off
-} = useWebSocket();
+// const {
+//     isConnected,
+//     authenticate,
+//     createRoom,
+//     joinRoom,
+//     leaveRoom: wsLeaveRoom,
+//     listRooms,
+//     playCard,
+//     drawCard,
+//     passTurn,
+//     on,
+//     off
+// } = useWebSocket();
 
 // Get auth info
 const { user, isLoggedIn } = useAuth();

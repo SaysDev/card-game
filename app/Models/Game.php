@@ -47,6 +47,16 @@ class Game extends Model
     ];
 
     /**
+     * The players in this game.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    public function players()
+    {
+        return $this->hasMany(GamePlayer::class)->with('user');
+    }
+
+    /**
      * The users who are playing this game.
      */
     public function users(): BelongsToMany
@@ -54,16 +64,6 @@ class Game extends Model
         return $this->belongsToMany(User::class, 'game_players')
                     ->withPivot('status', 'score', 'cards')
                     ->withTimestamps();
-    }
-
-    /**
-     * The players in this game.
-     *
-     * @return \Illuminate\Database\Eloquent\Relations\HasMany
-     */
-    public function players()
-    {
-        return $this->hasMany(GamePlayer::class);
     }
 
     /**

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import WebSocketService, { gameState } from '@/Services/WebSocketService';
+
 import { useAuth } from '@/composables/useAuth';
 import { useToast } from '@/components/ui/toast';
 import GameBoard from '@/components/game/GameBoard.vue';
+import { webSocketService } from '@/Services/WebSocketService';
 
 const { user } = useAuth();
+console.log(user);
 const { toast } = useToast();
 
 const roomSizes = [2, 3, 4, 6];
@@ -16,130 +18,140 @@ const joined = ref(false);
 const gameStarted = ref(false);
 const onlineCount = ref(0);
 
-const playerReady = computed({
-  get: () => {
-    // Safely access user ID with optional chaining and type checking
-    const userId = user.value?.id;
-    if (typeof userId === 'undefined' || userId === null) return false;
+// const playerReady = computed({
+//   get: () => {
+//     // Safely access user ID with optional chaining and type checking
+//     const userId = user.value?.id;
+//     if (typeof userId === 'undefined' || userId === null) return false;
     
-    const myPlayer = gameState.players.find(player => player.user_id === userId);
-    return myPlayer?.ready === true || myPlayer?.status === 'ready' || false;
-  },
-  set: (value) => {
-    WebSocketService.setReadyStatus(value);
-  }
-});
+//     const myPlayer = gameState.players.find(player => player.user_id === userId);
+//     return myPlayer?.ready === true || myPlayer?.status === 'ready' || false;
+//   },
+//   set: (value) => {
+//     WebSocketService.setReadyStatus(value);
+//   }
+// });
+
+// function joinQueue() {
+//   WebSocketService.joinMatchmaking(selectedSize.value, isPrivate.value, isPrivate.value ? privateCode.value : null);
+// }
+
+// function toggleReady() {
+//   WebSocketService.setReadyStatus(!playerReady.value);
+// }
+
+// WebSocketService.on('room_joined', (data: any) => {
+//   joined.value = true;
+//   gameState.roomId = data.room_id;
+//   gameState.roomName = data.room_name;
+  
+//   console.log('Room joined data:', data);
+  
+//   if (data.players && Array.isArray(data.players)) {
+//     gameState.players = data.players.map((p: any) => {
+//       // Ensure we have valid user_id and username
+//       const userId = p.user_id || p.id || 0;
+//       const username = p.username || p.name || 'Gracz';
+//       const status = p.status || 'not_ready';
+//       const ready = p.ready || status === 'ready';
+      
+//       return {
+//         user_id: userId,
+//         username: username,
+//         status: status,
+//         ready: ready,
+//         score: p.score ?? 0,
+//         cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
+//       };
+//     });
+//   }
+// });
+
+// WebSocketService.on('player_status_changed', (data: { player_id: number; status: string; ready: boolean; }) => {
+//   const playerIndex = gameState.players.findIndex(p => p.user_id === data.player_id);
+//   if (playerIndex !== -1) {
+//     gameState.players[playerIndex].status = data.status;
+//     gameState.players[playerIndex].ready = data.ready;
+//   }
+// });
+
+// WebSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
+//   const myId = user.value?.id;
+//   const playerIndex = gameState.players.findIndex(p => p.user_id === myId);
+//   if (playerIndex !== -1) {
+//     gameState.players[playerIndex].status = data.status;
+//     gameState.players[playerIndex].ready = data.ready;
+//   }
+// });
+
+// WebSocketService.on('game_started', () => {
+//   gameStarted.value = true;
+//   toast({
+//     title: 'Gra rozpoczęta',
+//     description: 'Gra została rozpoczęta!',
+//   });
+// });
+
+// WebSocketService.on('online_count', (count: number) => {
+//   onlineCount.value = count;
+// });
+
+// WebSocketService.on('room_full', () => {
+//   toast({ title: 'Pokój pełny', description: 'Wybrany pokój jest już pełny.', variant: 'destructive' });
+//   joined.value = false;
+//   gameStarted.value = false;
+//   gameState.roomId = null;
+//   gameState.roomName = null;
+//   gameState.players = [];
+// });
+
+// WebSocketService.on('room_not_found', () => {
+//   toast({ title: 'Nie znaleziono pokoju', description: 'Pokój nie istnieje lub został zamknięty.', variant: 'destructive' });
+//   joined.value = false;
+//   gameStarted.value = false;
+//   gameState.roomId = null;
+//   gameState.roomName = null;
+//   gameState.players = [];
+// });
+
+// WebSocketService.on('server_error', (err: { message: string }) => {
+//   toast({ title: 'Błąd serwera', description: err.message, variant: 'destructive' });
+//   joined.value = false;
+//   gameStarted.value = false;
+//   gameState.roomId = null;
+//   gameState.roomName = null;
+//   gameState.players = [];
+// });
+
+// function leaveRoom() {
+//   WebSocketService.leaveRoom();
+//   joined.value = false;
+//   gameStarted.value = false;
+//   gameState.roomId = null;
+//   gameState.roomName = null;
+//   gameState.players = [];
+// }
 
 function joinQueue() {
-  WebSocketService.joinMatchmaking(selectedSize.value, isPrivate.value, isPrivate.value ? privateCode.value : null);
-}
-
-function toggleReady() {
-  WebSocketService.setReadyStatus(!playerReady.value);
-}
-
-WebSocketService.on('room_joined', (data: any) => {
-  joined.value = true;
-  gameState.roomId = data.room_id;
-  gameState.roomName = data.room_name;
-  
-  console.log('Room joined data:', data);
-  
-  if (data.players && Array.isArray(data.players)) {
-    gameState.players = data.players.map((p: any) => {
-      // Ensure we have valid user_id and username
-      const userId = p.user_id || p.id || 0;
-      const username = p.username || p.name || 'Gracz';
-      const status = p.status || 'not_ready';
-      const ready = p.ready || status === 'ready';
-      
-      return {
-        user_id: userId,
-        username: username,
-        status: status,
-        ready: ready,
-        score: p.score ?? 0,
-        cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-      };
-    });
-  }
-});
-
-WebSocketService.on('player_status_changed', (data: { player_id: number; status: string; ready: boolean; }) => {
-  const playerIndex = gameState.players.findIndex(p => p.user_id === data.player_id);
-  if (playerIndex !== -1) {
-    gameState.players[playerIndex].status = data.status;
-    gameState.players[playerIndex].ready = data.ready;
-  }
-});
-
-WebSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
-  const myId = user.value?.id;
-  const playerIndex = gameState.players.findIndex(p => p.user_id === myId);
-  if (playerIndex !== -1) {
-    gameState.players[playerIndex].status = data.status;
-    gameState.players[playerIndex].ready = data.ready;
-  }
-});
-
-WebSocketService.on('game_started', () => {
-  gameStarted.value = true;
-  toast({
-    title: 'Gra rozpoczęta',
-    description: 'Gra została rozpoczęta!',
+  webSocketService.send({
+    type: 'matchmaking_join',
+    data: {
+      game_type: 'card_game',
+      size: selectedSize.value,
+      isPrivate: isPrivate.value,
+      privateCode: privateCode.value
+    }
   });
-});
 
-WebSocketService.on('online_count', (count: number) => {
-  onlineCount.value = count;
-});
-
-WebSocketService.on('room_full', () => {
-  toast({ title: 'Pokój pełny', description: 'Wybrany pokój jest już pełny.', variant: 'destructive' });
-  joined.value = false;
-  gameStarted.value = false;
-  gameState.roomId = null;
-  gameState.roomName = null;
-  gameState.players = [];
-});
-
-WebSocketService.on('room_not_found', () => {
-  toast({ title: 'Nie znaleziono pokoju', description: 'Pokój nie istnieje lub został zamknięty.', variant: 'destructive' });
-  joined.value = false;
-  gameStarted.value = false;
-  gameState.roomId = null;
-  gameState.roomName = null;
-  gameState.players = [];
-});
-
-WebSocketService.on('server_error', (err: { message: string }) => {
-  toast({ title: 'Błąd serwera', description: err.message, variant: 'destructive' });
-  joined.value = false;
-  gameStarted.value = false;
-  gameState.roomId = null;
-  gameState.roomName = null;
-  gameState.players = [];
-});
-
-function leaveRoom() {
-  WebSocketService.leaveRoom();
-  joined.value = false;
-  gameStarted.value = false;
-  gameState.roomId = null;
-  gameState.roomName = null;
-  gameState.players = [];
+  // webSocketService.send({
+  //   type: 'test',
+  //   data: {
+  //     message: 'Hello from client'
+  //   }
+  // });
 }
 
-onMounted(() => {
-  if (!WebSocketService.isConnectedAndReady()) {
-    WebSocketService.connect();
-  }
-  // setInterval(() => {
-  //   if (WebSocketService.isConnectedAndReady()) {
-  //     WebSocketService.getOnlineCount();
-  //   }
-  // }, 1000);
-});
+onMounted(async () => await webSocketService.connect());
 </script>
 
 <template>
@@ -159,7 +171,7 @@ onMounted(() => {
         <div class="mb-6">
           <label class="block font-semibold mb-2 text-lg text-indigo-700 dark:text-indigo-200">Wybierz tryb pokoju:</label>
           <div class="flex flex-wrap gap-4">
-            <label v-for="size in roomSizes" :key="size" class="flex items-center gap-2 cursor-pointer px-4 py-2 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-700 transition">
+            <label v-for="size in roomSizes" :key="size" class="flex items-center gap-2 cursor-pointer px-4 py-2 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-700 transition w-full">
               <input type="radio" v-model="selectedSize" :value="size" class="accent-indigo-600" />
               <span class="font-semibold text-indigo-900 dark:text-indigo-100">Pokój {{ size }}-osobowy</span>
             </label>
@@ -171,7 +183,7 @@ onMounted(() => {
           </label>
           <input v-if="isPrivate" v-model="privateCode" placeholder="Kod pokoju" class="border border-indigo-300 dark:border-indigo-700 rounded px-3 py-2 bg-white dark:bg-gray-800 text-indigo-900 dark:text-indigo-100 focus:ring-2 focus:ring-indigo-400 outline-none" />
         </div>
-        <button @click="joinQueue" :disabled="!gameState.isAuthenticated" class="w-full py-3 mt-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg text-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+        <button @click="joinQueue" class="w-full py-3 mt-2 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-bold rounded-xl shadow-lg text-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
           Dołącz do kolejki
         </button>
       </div>
@@ -223,7 +235,7 @@ onMounted(() => {
           :players="gameState.players"
         />
       </div>
-      <div class="mt-8 p-6 rounded-xl bg-gradient-to-br from-indigo-50 via-purple-50 to-white dark:from-indigo-900 dark:via-purple-900 dark:to-gray-900 border border-indigo-200 dark:border-indigo-800 shadow">
+      <div class="hidden mt-8 p-6 rounded-xl bg-gradient-to-br from-indigo-50 via-purple-50 to-white dark:from-indigo-900 dark:via-purple-900 dark:to-gray-900 border border-indigo-200 dark:border-indigo-800 shadow">
         <h4 class="text-lg font-bold text-indigo-700 dark:text-indigo-200 mb-2">Jak grać?</h4>
         <ul class="list-disc list-inside text-gray-700 dark:text-gray-300 space-y-1">
           <li>Wybierz tryb pokoju i dołącz do gry.</li>

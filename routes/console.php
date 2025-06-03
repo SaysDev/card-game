@@ -26,7 +26,7 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('websocket:start-inline {host=0.0.0.0} {port=9502}', function () {
+Artisan::command('websocket:start-inline {host=127.0.0.1} {port=9502}', function () {
     $host = $this->argument('host');
     $port = (int) $this->argument('port');
 

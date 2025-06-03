@@ -21,6 +21,7 @@
         "react/event-loop": "^1.3",
         "react/socket": "^1.12",
         "react/stream": "^1.2",
+        "react/zmq": "^0.4.0",
         "tightenco/ziggy": "^2.4"
     },
     "require-dev": {
@@ -63,7 +64,7 @@
         ],
         "dev": [
             "Composer\\Config::disableProcessTimeout",
-            "npx concurrently -c \"#93c5fd,#c4b5fd,#fdba74\" \"php artisan serve --port=3000\" \"php artisan pail --timeout=0\" \"npm run dev\" --names=server,logs,vite"
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fdba74\" \"php artisan serve --port=3000\" \"php artisan pail -vv --timeout=0\" \"npm run dev\" --names=server,logs,vite"
         ],
         "dev:ssr": [
             "npm run build:ssr",

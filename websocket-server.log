@@ -1,6 +1,6 @@
 
 Starting WebSocket Server...
-Server will listen on 0.0.0.0:9502
+Server will listen on 127.0.0.1:9502
 Loaded 121 rooms from database
 PHP Fatal error:  Access level to App\Servers\Handlers\RoomHandler::validatePlayer() must be protected (as in class App\Servers\Handlers\BaseMessageHandler) or weaker in /home/says/projekty/CardGame/app/Servers/Handlers/RoomHandler.php on line 437
 

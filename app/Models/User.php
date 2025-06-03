@@ -49,7 +49,25 @@ class User extends Authenticatable
     /**
      * Get the active game the user is currently playing
      */
+    public function activeGame()
+    {
+        return $this->belongsToMany(Game::class, 'game_players')
+                    ->where(function($query) {
+                        $query->where('games.status', 'waiting')
+                              ->orWhere('games.status', 'playing');
+                    })
+                    ->with(['players.user'])
+                    ->latest('games.created_at')
+                    ->take(1);
+    }
 
+    /**
+     * Check if user is currently in a game
+     */
+    public function isInGame()
+    {
+        return $this->activeGame() !== null;
+    }
 
     /**
      * Get the attributes that should be cast.
@@ -62,26 +80,5 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
-    }
-
-    /**
-     * Get the active game the user is currently playing
-     */
-    public function activeGame()
-    {
-        return $this->games()
-                    ->where(function($query) {
-                        $query->where('games.status', 'waiting')
-                              ->orWhere('games.status', 'playing');
-                    })
-                    ->first();
-    }
-
-    /**
-     * Check if user is currently in a game
-     */
-    public function isInGame()
-    {
-        return $this->activeGame() !== null;
     }
 }

@@ -68,33 +68,46 @@ class WebSocketAuthService
         }
 
         try {
-            $decoded = JWT::decode($token, new Key($this->secret, $this->algorithm));
-            $data = (array) $decoded;
+            // First try to validate as JWT token
+            try {
+                $decoded = JWT::decode($token, new Key($this->secret, $this->algorithm));
+                $data = (array) $decoded;
 
-            // Check if it's a server token
-            if (isset($data['type']) && $data['type'] === 'server') {
-                // For server tokens, just check if it's our fixed token
-                if ($token === $this->generateServerToken()) {
-                    return $data;
-                }
-                $this->logger->warning("Invalid server token");
-                return null;
-            }
-
-            // For user tokens, verify with Laravel's auth
-            if (isset($data['type']) && $data['type'] === 'user') {
-                // Check if user exists
-                $user = User::find($data['user_id']);
-                if (!$user) {
-                    $this->logger->warning("Invalid user", ['user_id' => $data['user_id']]);
+                // Check if it's a server token
+                if (isset($data['type']) && $data['type'] === 'server') {
+                    // For server tokens, just check if it's our fixed token
+                    if ($token === $this->generateServerToken()) {
+                        return $data;
+                    }
+                    $this->logger->warning("Invalid server token");
                     return null;
                 }
 
-                return [
-                    'user_id' => $user->id,
-                    'username' => $user->name,
-                    'type' => 'user'
-                ];
+                // For user tokens, verify with Laravel's auth
+                if (isset($data['type']) && $data['type'] === 'user') {
+                    // Check if user exists
+                    $user = User::find($data['user_id']);
+                    if (!$user) {
+                        $this->logger->warning("Invalid user", ['user_id' => $data['user_id']]);
+                        return null;
+                    }
+
+                    return [
+                        'user_id' => $user->id,
+                        'username' => $user->name,
+                        'type' => 'user'
+                    ];
+                }
+            } catch (\Exception $e) {
+                // If JWT validation fails, try to validate as ws_token
+                $user = User::where('ws_token', $token)->first();
+                if ($user) {
+                    return [
+                        'user_id' => $user->id,
+                        'username' => $user->name,
+                        'type' => 'user'
+                    ];
+                }
             }
 
             return null;

@@ -47,9 +47,7 @@ class AuthenticatedSessionController extends Controller
             $request->user()->update(['ws_token' => $tokenData['token']]);
             
             // Load active game to make it available in Inertia props
-            $request->user()->load(['activeGame' => function($query) {
-                $query->with(['players.user']);
-            }]);
+            $request->user()->load('activeGame');
         }
 
         return redirect()->intended(route('dashboard', absolute: false));
