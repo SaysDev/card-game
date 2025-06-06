@@ -9,78 +9,6 @@ import { useInitials } from '@/composables/useInitials';
 import WebSocketService, { gameState } from '@/Services/WebSocketService';
 import { GameRoomService } from '@/Services/GameRoomService';
 
-// Define the CardData interface to match GameBoard.vue expectations
-interface CardData {
-  value: string;
-  header: string;
-  cardRank: string;
-  cardSymbol: string;
-  symbolColorClass: string;
-  rankValue: number;
-}
-
-// Function to transform basic card data into CardData interface
-const transformCardData = (card: { suit: string; value: string }): CardData => {
-  // Map the string value to a rank value
-  const rankMap: { [key: string]: number } = {
-      '9': 9,
-      '10': 10,
-      'J': 11,
-      'Q': 12,
-      'K': 13,
-      'A': 14
-  };
-  const rankValue = rankMap[card.value] || 0;
-
-  // Determine card symbol and color class based on suit
-  let cardSymbol = '';
-  let symbolColorClass = '';
-  switch (card.suit) {
-      case 'hearts':
-          cardSymbol = '♥';
-          symbolColorClass = 'text-red-600'; // Adjust class as needed
-          break;
-      case 'diamonds':
-          cardSymbol = '♦';
-          symbolColorClass = 'text-red-600'; // Adjust class as needed
-          break;
-      case 'clubs':
-          cardSymbol = '♣';
-          symbolColorClass = 'text-gray-800 dark:text-gray-200'; // Adjust class as needed
-          break;
-      case 'spades':
-          cardSymbol = '♠';
-          symbolColorClass = 'text-gray-800 dark:text-gray-200'; // Adjust class as needed
-          break;
-      default:
-          // Handle unknown suit
-          cardSymbol = '?';
-          symbolColorClass = '';
-  }
-
-  // Determine card rank (same as value for 9, 10, J, Q, K, A)
-  const cardRank = card.value.toUpperCase();
-
-  // Determine header (usually rank and symbol)
-  const header = `${cardRank}${cardSymbol}`;
-
-  return {
-      value: card.value,
-      header: header,
-      cardRank: cardRank,
-      cardSymbol: cardSymbol,
-      symbolColorClass: symbolColorClass,
-      rankValue: rankValue,
-  };
-};
-
-// Get Inertia shared data
-const page = usePage();
-const inertiaUser = computed(() => page.props.auth?.user);
-
-// Track if current player is in game (reactive to WebSocket events)
-const isCurrentPlayerInGame = ref(false);
-
 const props = defineProps<{
   game: {
     id: number;
@@ -121,24 +49,19 @@ const { user } = useAuth();
 const { getInitials } = useInitials();
 
 const gameStarted = ref(props.game.game_data.game_started);
-// Initialize based on the prop value from the server
+const isCurrentPlayerInGame = ref(false);
 isCurrentPlayerInGame.value = props.isPlayer;
 const playerReady = computed({
-  get: () => gameState.playerReady,
-  set: (value) => { gameState.playerReady = value; }
+  get: () => gameState.players.find(player => player.user_id === user.value?.id)?.status === 'ready' || false,
+  set: (value) => {
+    WebSocketService.setReadyStatus(value);
+  }
 });
 
 const isCurrentUserTurn = computed(() => {
   if (!user.value || !props.game.game_data.players) return false;
-
-  // Find the current player's index in the players array
   const playerIndex = props.game.game_data.players.indexOf(user.value.id);
   return playerIndex === props.game.game_data.current_turn;
-});
-
-// Check if current user is the room creator
-const isRoomCreator = computed(() => {
-  return gameState.isRoomCreator;
 });
 
 // Count ready players for the Start Game button
@@ -147,309 +70,235 @@ const readyPlayersCount = computed(() => {
   return gameState.players.filter(player => player.status === 'ready').length;
 });
 
-onMounted(() => {
-  // Check if this game is the user's active game
-  const inThisGame = props.isPlayer;
+const isRoomCreator = computed(() => {
+  if (!props.game.players || !props.game.players.length || !user.value) return false;
+  const creatorId = props.game.players[0].user_id ?? props.game.players[0].id;
+  return user.value.id === creatorId;
+});
 
-  // Get the authenticated user ID from Inertia shared data
-  let authenticatedUserId = usePage().props?.user?.id;
-
-
-  try {
-    // Use the computed inertiaUser instead of directly accessing page.props
-    if (inertiaUser.value) {
-      authenticatedUserId = inertiaUser.value.id;
-      console.log('Using authenticated user ID from Inertia shared data:', authenticatedUserId);
-    }
-    // Fall back to user from composable if needed
-    else if (user.value) {
-      authenticatedUserId = user.value.id;
-      console.log('Using authenticated user ID from composable:', authenticatedUserId);
-    }
-
-    if (!authenticatedUserId) {
-      console.warn('No authenticated user ID found from any source');
-    }
-  } catch (error) {
-    console.warn('Could not access authenticated user data:', error);
+const handleStartGame = () => {
+  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
+    toast({
+      title: 'Błąd połączenia',
+      description: 'Nie można rozpocząć gry - brak połączenia z serwerem.',
+      variant: 'destructive',
+    });
+    return;
   }
-
-  // Connect to WebSocket server using the WebSocketService singleton
-  if (authenticatedUserId) {
-    // First register event handlers
-    WebSocketService.on('connected', () => {
-      console.log('WebSocket connected, authenticated next');
+  if (!isRoomCreator.value) {
+    toast({
+      title: 'Błąd',
+      description: 'Tylko twórca pokoju może rozpocząć grę.',
+      variant: 'destructive',
     });
-
-    WebSocketService.on('authenticated', () => {
-      console.log('Successfully authenticated');
-
-      // Po uwierzytelnieniu:
-      // Jeśli użytkownik NIE jest graczem (props.isPlayer false) i strona ma ID gry, próbujemy dołączyć.
-      // Jeśli użytkownik JEST graczem (props.isPlayer true), zakładamy, że jest już w pokoju
-      // i synchronizujemy gameState z props.game (dane z serwera/Inertii).
-      if (!props.isPlayer && props.game?.id) { // Jeśli NIE jest graczem i jest ID gry
-        console.log('User is not currently a player in this game. They need to join.');
-        handleJoinRoom(); // Wywołaj funkcję dołączania dla nowego gracza
-      } else if (props.isPlayer && props.game?.id) { // Jeśli JEST graczem i jest ID gry (scenariusz odświeżenia)
-        console.log('User is already a player according to server state. Synchronizing gameState...');
-        // Synchronizuj gameState z danymi z props.game przekazanymi przez Inertię
-        gameState.roomId = props.game.room_id?.toString() || props.game.id.toString();
-        gameState.roomName = props.game.name;
-        gameState.status = props.game.status as 'waiting' | 'playing' | 'ended';
-
-        // Mapowanie danych graczy z props.game do formatugameState.players
-        if (props.game.players && Array.isArray(props.game.players)) {
-          gameState.players = props.game.players.map(player => ({
-            user_id: player.user?.id || player.user_id, // Użyj user.id lub user_id
-            username: player.user?.name || player.name, // Użyj user.name lub name
-            status: player.status || 'waiting', // Ensure status is always a string
-            ready: player.status === 'ready',
-            score: player.score || 0, // Ensure score is always a number
-            cards_count: player.cards ? player.cards.length : 0
-          }));
-        }
-
-        // Ustaw flagę, że bieżący gracz jest w grze
-        isCurrentPlayerInGame.value = true;
-
-        // Możesz tutaj też zsynchronizować inne początkowe dane gry z props.game.game_data
-        // gameState.currentTurn = props.game.game_data.current_turn;
-        // gameState.currentPlayerId = props.game.game_data.players[props.game.game_data.current_turn]; // Przykład
-        // ... inne dane z game_data ...
-
-      } else {
-         console.log('User is not a player and game ID is missing.');
-      }
+    return;
+  }
+  const readyPlayers = gameState.players.filter(p => p.status === 'ready').length;
+  if (readyPlayers < 2) {
+    toast({
+      title: 'Za mało graczy',
+      description: 'Do rozpoczęcia gry potrzeba co najmniej 2 gotowych graczy.',
+      variant: 'destructive',
     });
+    return;
+  }
+  WebSocketService.startGame();
+  toast({
+    title: 'Rozpoczynanie gry',
+    description: 'Rozpoczynanie gry w toku...',
+  });
+};
 
-    WebSocketService.on('room_joined', (data: { room_id: string; room_name: string; players: any[] }) => {
-      toast({
-        title: 'Dołączono do pokoju',
-        description: `Dołączono do pokoju: ${data.room_name}`,
-      });
-
-      // Update local state to reflect that the player has joined
-      isCurrentPlayerInGame.value = true;
-
-      // Log players data for debugging
-      console.log('Room joined, received players data:', data.players);
-      console.log('Current gameState.players:', gameState.players);
-
-       // Update gameState players list with full player objects
-       // Assuming data.players in room_joined are full player objects
-       if (data.players && Array.isArray(data.players)) {
-         gameState.players = data.players.map(p => ({
-            user_id: p.user_id,
-            username: p.username,
-            status: p.status || 'waiting', // Ensure status is always a string
-            ready: p.ready || false, // Ensure ready is always a boolean
-            score: p.score || 0, // Ensure score is always a number
-            cards_count: p.cards_count || 0 // Ensure cards_count is always a number
-         }));
-       }
-
-      // Check for duplicate user IDs in players array (logic moved/simplified if needed)
-      // ... existing code ...
-    });
-
-    WebSocketService.on('game_started', () => {
-      gameStarted.value = true;
-      toast({
-        title: 'Gra rozpoczęta',
-        description: 'Gra została rozpoczęta!',
-      });
-    });
-
-    WebSocketService.on('player_joined', (data: any) => {
-      toast({
-        title: 'Nowy gracz',
-        description: `${data.player.username} dołączył do gry`,
-      });
-    });
-
-    WebSocketService.on('player_left', (data: any) => {
-      toast({
-        title: 'Gracz opuścił grę',
-        description: `${data.username} opuścił grę`,
-      });
-    });
-
-    WebSocketService.on('server_error', (data: any) => {
-      toast({
-        title: 'Błąd serwera',
-        description: data.message,
-        variant: 'destructive',
-      });
-    });
-
-    WebSocketService.on('room_not_found', (data: any) => {
-      console.error('Room not found error:', data);
-      toast({
-        title: 'Nie znaleziono pokoju',
-        description: 'Pokój gry nie istnieje lub został zamknięty',
-        variant: 'destructive',
-      });
-
-      // If you want to redirect to a list of games or create a new room
-      // You can do it here
-    });
-
-    WebSocketService.on('room_reconnected', (data: { room_id: string; room_name: string; game_status: 'waiting' | 'playing' | 'ended'; players_list: any[]; game_state: any; }) => {
-      toast({
-        title: 'Ponowne połączenie z pokojem',
-        description: `Ponownie połączono z pokojem: ${data.room_name}`,
-      });
-
-      // Update gameState with synchronized data from the server
-      gameState.roomId = data.room_id;
-      gameState.roomName = data.room_name;
-      gameState.status = data.game_status;
-
-      // Update gameState players list using players_list
-      if (data.players_list && Array.isArray(data.players_list)) {
-        gameState.players = data.players_list.map(player => ({
-          user_id: player.user_id,
-          username: player.username,
-          status: player.status || 'waiting', // Ensure status is always a string
-          ready: player.ready || false, // Ensure ready is always a boolean
-          score: player.score || 0, // Ensure score is always a number
-          cards_count: player.cards_count || 0 // Ensure cards_count is always a number
-        }));
-      }
-
-      // Update other game state properties from game_state
-      if (data.game_state) {
-         gameState.currentTurn = data.game_state.current_turn;
-         // Zakładam, że currentPlayerId jest user_id gracza
-         gameState.currentPlayerId = data.game_state.players[data.game_state.current_turn]; // Użyj players z game_state
-         // Use transformCardData for hand, playArea, and lastCard
-         gameState.hand = data.game_state.hand ? data.game_state.hand.map(transformCardData) : [];
-         gameState.playArea = data.game_state.play_area ? data.game_state.play_area.map(transformCardData) : [];
-         gameState.lastCard = data.game_state.last_card ? transformCardData(data.game_state.last_card) : null;
-         gameState.deckCount = data.game_state.deck_remaining; // Update deck count
-         // Aktualizacja isYourTurn na podstawie currentPlayerId
-         gameState.isYourTurn = gameState.currentPlayerId === (inertiaUser.value?.id || WebSocketService.userId);
-      }
-
-      isCurrentPlayerInGame.value = true; // User is now confirmed to be in the game
-    });
-
-    // Dodaj handler player_status_changed, jeśli go brakuje
-    WebSocketService.on('player_status_changed', (data: { user_id: number; status: 'waiting' | 'ready' | 'playing' | 'disconnected'; ready: boolean; }) => {
-        console.log(`Player status changed: User ${data.user_id} is now ${data.status} (Ready: ${data.ready})`);
-        // Find the player in gameState.players and update their status and ready state
-        const playerIndex = gameState.players.findIndex(p => p.user_id === data.user_id);
-        if (playerIndex !== -1) {
-            gameState.players[playerIndex].status = data.status;
-            gameState.players[playerIndex].ready = data.ready;
-        }
-    });
-
-    // Dodaj handler turn_changed
-    WebSocketService.on('turn_changed', (data: { current_player_id: number; current_turn: number; }) => {
-        console.log(`Turn changed: current_player_id = ${data.current_player_id}, current_turn = ${data.current_turn}`);
-        gameState.currentTurn = data.current_turn; // Zaktualizuj indeks tury
-        gameState.currentPlayerId = data.current_player_id; // Zaktualizuj ID gracza, którego jest tura
-        // Zaktualizuj isYourTurn na podstawie nowego currentPlayerId
-        gameState.isYourTurn = gameState.currentPlayerId === (inertiaUser.value?.id || WebSocketService.userId);
-    });
-
-    // Dodaj handler game_state_updated (ogólna aktualizacja stanu gry)
-    WebSocketService.on('game_state_updated', (data: any) => {
-        console.log('Received game_state_updated:', data);
-        // Log the hand data specifically to inspect its structure
-        console.log('Received hand data:', data.game_state?.hand);
-        // Aktualizuj odpowiednie pola gameState na podstawie danych z serwera
-        if (data.players_list) {
-             gameState.players = data.players_list.map((p: any) => ({
-                user_id: p.user_id,
-                username: p.username,
-                status: p.status || 'waiting', // Ensure status is always a string
-                ready: p.ready || false, // Ensure ready is always a boolean
-                score: p.score || 0, // Ensure score is always a number
-                cards_count: p.cards_count || 0 // Ensure cards_count is always a number
-             }));
-        }
-        if (data.game_state) {
-            gameState.currentTurn = data.game_state.current_turn;
-            gameState.currentPlayerId = data.game_state.currentPlayerId; // Assuming this is included
-            gameState.hand = data.game_state.hand ? data.game_state.hand.map(transformCardData) : [];
-            gameState.playArea = data.game_state.play_area ? data.game_state.play_area.map(transformCardData) : [];
-            gameState.lastCard = data.game_state.last_card ? transformCardData(data.game_state.last_card) : null;
-            gameState.deckCount = data.game_state.deck_remaining; // Update deck count
-            // Aktualizacja isYourTurn na podstawie currentPlayerId
-            gameState.isYourTurn = gameState.currentPlayerId === (inertiaUser.value?.id || WebSocketService.userId);
-        }
-         // Dodaj aktualizację innych pól stanu gry, które mogą być wysyłane
-         gameState.status = data.game_status; // Aktualizuj status gry
-         // ... inne pola ...
-    });
-  } else {
-    // Handle case where no authenticated user is available
+onMounted(() => {
+  const authInfo = getAuthInfo();
+  if (!authInfo) {
     console.error('No authenticated user available to connect to WebSocket');
     toast({
       title: 'Błąd autoryzacji',
-      description: 'Nie można nawiązać połączenia - brak zalogowanego użytkownika',
+      description: 'Nie można nawiązać połączenia - brak zalogowanego użytkownika lub tokenu',
       variant: 'destructive',
     });
+    return;
+  }
+  WebSocketService.connect(String(authInfo.id), authInfo.name, authInfo.token || '');
+
+  // Prevent duplicate listeners
+  WebSocketService.off('authenticated', handleAuthenticated);
+  WebSocketService.off('room_joined', handleRoomJoined);
+
+  function handleAuthenticated() {
+    if (!props.isPlayer && props.game?.id) {
+      handleJoinRoom();
+    } else if (props.isPlayer && props.game?.id) {
+      gameState.roomId = props.game.room_id?.toString() || props.game.id.toString();
+      gameState.roomName = props.game.name;
+      gameState.status = props.game.status as 'waiting' | 'playing' | 'ended';
+      if (props.game.players && Array.isArray(props.game.players)) {
+        gameState.players = props.game.players.map(player => ({
+          user_id: player.user?.id ?? player.user_id ?? 0,
+          username: player.user?.name ?? player.name ?? 'Gracz',
+          status: player.status === 'ready' ? 'ready' : 'not_ready',
+          ready: player.status === 'ready',
+          score: player.score ?? 0,
+          cards_count: player.cards ? player.cards.length : 0
+        }));
+      }
+      isCurrentPlayerInGame.value = true;
+      const roomId = props.game.room_id?.toString() || props.game.id.toString();
+      WebSocketService.joinRoomWithUserInfo(roomId);
+    } else {
+      console.log('User is not a player and game ID is missing.');
+    }
   }
 
-  // Use inertiaUser from usePage() directly
-  const userName = inertiaUser.value ? inertiaUser.value.name : 'Guest';
-
-  // Wywołaj connect bez jawnego podawania tokenu - zostanie on pobrany z page.props.user
-  if (inertiaUser.value?.id) {
-    console.log('Connecting to WebSocket with user ID from Inertia:', inertiaUser.value.id);
-    // Nie przekazujemy tokenu, będzie pobrany z page.props.user.ws_token
-    WebSocketService.connect(String(inertiaUser.value.id), userName);
-  } else if (authenticatedUserId) {
-    console.log('Connecting to WebSocket with fallback user ID:', authenticatedUserId);
-    WebSocketService.connect(String(authenticatedUserId), userName);
-  } else {
-    console.error('Cannot connect to WebSocket: No valid user ID available');
+  function handleRoomJoined(data: { room_id: string; room_name: string; players: any[] }) {
+    console.log('[room_joined] Setting gameState.roomId to', data.room_id);
     toast({
-      title: 'Błąd połączenia',
-      description: 'Nie można połączyć się z serwerem - brak identyfikatora użytkownika',
+      title: 'Dołączono do pokoju',
+      description: `Dołączono do pokoju: ${data.room_name}`,
+    });
+    isCurrentPlayerInGame.value = true;
+    if (data.players && Array.isArray(data.players)) {
+      gameState.players = data.players.map(p => ({
+        user_id: p.user_id ?? p.id ?? 0,
+        username: p.username ?? p.name ?? 'Gracz',
+        status: p.status === 'ready' ? 'ready' : 'not_ready',
+        ready: p.status === 'ready',
+        score: p.score ?? 0,
+        cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
+      }));
+    }
+    gameState.roomId = data.room_id;
+    gameState.roomName = data.room_name;
+    WebSocketService.setReadyStatus(true);
+  }
+
+  WebSocketService.on('authenticated', handleAuthenticated);
+  WebSocketService.on('room_joined', handleRoomJoined);
+
+  WebSocketService.on('game_started', () => {
+    gameStarted.value = true;
+    toast({
+      title: 'Gra rozpoczęta',
+      description: 'Gra została rozpoczęta!',
+    });
+  });
+
+  WebSocketService.on('player_joined', (data: any) => {
+    toast({
+      title: 'Nowy gracz',
+      description: `${data.player.username} dołączył do gry`,
+    });
+  });
+
+  WebSocketService.on('player_left', (data: any) => {
+    toast({
+      title: 'Gracz opuścił grę',
+      description: `${data.username} opuścił grę`,
+    });
+  });
+
+  WebSocketService.on('server_error', (data: any) => {
+    toast({
+      title: 'Błąd serwera',
+      description: data.message,
       variant: 'destructive',
     });
-  }
+  });
+
+  WebSocketService.on('room_not_found', (data: any) => {
+    console.error('Room not found error:', data);
+    toast({
+      title: 'Nie znaleziono pokoju',
+      description: 'Pokój gry nie istnieje lub został zamknięty',
+      variant: 'destructive',
+    });
+  });
+
+  WebSocketService.on('room_reconnected', (data: { room_id: string; room_name: string; game_status: 'waiting' | 'playing' | 'ended'; players_list: any[]; game_state: any; }) => {
+    toast({
+      title: 'Ponowne połączenie z pokojem',
+      description: `Ponownie połączono z pokojem: ${data.room_name}`,
+    });
+    gameState.roomId = data.room_id;
+    gameState.roomName = data.room_name;
+    gameState.status = data.game_status;
+    if (data.players_list && Array.isArray(data.players_list)) {
+      gameState.players = data.players_list.map(player => ({
+        user_id: player.user_id ?? player.id ?? 0,
+        username: player.username ?? player.name ?? 'Gracz',
+        status: player.status === 'ready' ? 'ready' : 'not_ready',
+        ready: player.status === 'ready',
+        score: player.score ?? 0,
+        cards_count: player.cards_count ?? (player.cards ? player.cards.length : 0)
+      }));
+    }
+    if (data.game_state) {
+      gameState.currentTurn = data.game_state.current_turn;
+      gameState.currentPlayerId = data.game_state.players[data.game_state.current_turn];
+      gameState.hand = data.game_state.hand ? data.game_state.hand.map(transformCardData) : [];
+      gameState.playArea = data.game_state.play_area ? data.game_state.play_area.map(transformCardData) : [];
+      gameState.lastCard = data.game_state.last_card ? transformCardData(data.game_state.last_card) : null;
+      gameState.deckCount = data.game_state.deck_remaining;
+      gameState.isYourTurn = gameState.currentPlayerId === authInfo.id;
+    }
+    isCurrentPlayerInGame.value = true;
+  });
+
+  WebSocketService.on('player_status_changed', (data) => {
+    console.log('[player_status_changed]', data, gameState.players);
+    const playerIndex = gameState.players.findIndex(p => p.user_id === data.player_id);
+    if (playerIndex !== -1) {
+      gameState.players[playerIndex].status = data.status;
+      gameState.players[playerIndex].ready = data.ready;
+    }
+  });
+
+  WebSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
+    const myId = user.value?.id;
+    const playerIndex = gameState.players.findIndex(p => p.user_id === myId);
+    if (playerIndex !== -1) {
+      gameState.players[playerIndex].status = data.status;
+      gameState.players[playerIndex].ready = data.ready;
+    }
+  });
+
+  WebSocketService.on('turn_changed', (data: { current_player_id: number; current_turn: number; }) => {
+    gameState.currentTurn = data.current_turn;
+    gameState.currentPlayerId = data.current_player_id;
+    gameState.isYourTurn = gameState.currentPlayerId === authInfo.id;
+  });
+
+  WebSocketService.on('game_state_updated', (data: any) => {
+    if (data.players_list) {
+      gameState.players = data.players_list.map((p: any) => ({
+        user_id: p.user_id ?? p.id ?? 0,
+        username: p.username ?? p.name ?? 'Gracz',
+        status: p.status === 'ready' ? 'ready' : 'not_ready',
+        ready: p.status === 'ready',
+        score: p.score ?? 0,
+        cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
+      }));
+    }
+    if (data.game_state) {
+      gameState.currentTurn = data.game_state.current_turn;
+      gameState.currentPlayerId = data.game_state.currentPlayerId;
+      gameState.hand = data.game_state.hand ? data.game_state.hand.map(transformCardData) : [];
+      gameState.playArea = data.game_state.play_area ? data.game_state.play_area.map(transformCardData) : [];
+      gameState.lastCard = data.game_state.last_card ? transformCardData(data.game_state.last_card) : null;
+      gameState.deckCount = data.game_state.deck_remaining;
+      gameState.isYourTurn = gameState.currentPlayerId === authInfo.id;
+    }
+    gameState.status = data.game_status;
+  });
 });
 
 const toggleReady = () => {
-  // First check if WebSocketService is available and connected
-  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
-    console.error('Cannot set ready state: WebSocket is not connected');
-    toast({
-      title: 'Błąd połączenia',
-      description: 'Nie można zmienić statusu gotowości - utracono połączenie z serwerem.',
-      variant: 'destructive',
-    });
+  if (!gameState.roomId) {
+    console.error('Not in a room');
     return;
   }
-
   playerReady.value = !playerReady.value;
-
-  if (gameState.connected && gameState.roomId) {
-    // Use the dedicated method to set ready status
-    console.log(`Setting player ready status to: ${playerReady.value}`);
-    WebSocketService.setReadyStatus(playerReady.value);
-  } else {
-    console.error('Cannot set ready state: Not connected to a game room');
-    toast({
-      title: 'Błąd',
-      description: 'Nie jesteś połączony z pokojem gry',
-      variant: 'destructive',
-    });
-    // Revert the ready state since we couldn't send it
-    playerReady.value = !playerReady.value;
-    return;
-  }
-
-  toast({
-    title: playerReady.value ? 'Gotowy' : 'Niegotowy',
-    description: playerReady.value ? 'Jesteś gotowy do gry' : 'Oczekujesz na rozpoczęcie gry',
-  });
 };
 
 // Game action handlers
@@ -535,47 +384,6 @@ const handlePassTurn = () => {
   WebSocketService.passTurn();
 };
 
-// Handle starting the game (only room creator can do this)
-const handleStartGame = () => {
-  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
-    toast({
-      title: 'Błąd połączenia',
-      description: 'Nie można rozpocząć gry - brak połączenia z serwerem.',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Check if we're the room creator
-  if (!gameState.isRoomCreator) {
-    toast({
-      title: 'Błąd',
-      description: 'Tylko twórca pokoju może rozpocząć grę.',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Check if there are enough players who are ready
-  const readyPlayers = gameState.players.filter(p => p.status === 'ready').length;
-  if (readyPlayers < 2) {
-    toast({
-      title: 'Za mało graczy',
-      description: 'Do rozpoczęcia gry potrzeba co najmniej 2 gotowych graczy.',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Start the game
-  WebSocketService.startGame();
-
-  toast({
-    title: 'Rozpoczynanie gry',
-    description: 'Rozpoczynanie gry w toku...',
-  });
-};
-
 // Handle joining a game room
 const handleJoinRoom = () => {
   if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
@@ -602,10 +410,8 @@ const handleJoinRoom = () => {
 
 // Connection refresh method
 const refreshConnection = () => {
-  // Get user ID from our computed inertiaUser or useAuth
-  const userId = inertiaUser.value?.id || user.value?.id;
-
-  if (!userId) {
+  const authInfo = getAuthInfo();
+  if (!authInfo) {
     toast({
       title: 'Błąd',
       description: 'Brak informacji o użytkowniku do ponownego połączenia',
@@ -613,27 +419,17 @@ const refreshConnection = () => {
     });
     return;
   }
-
-  // Check current connection status
   if (WebSocketService) {
     const status = WebSocketService.getConnectionStatus();
     console.log('Current WebSocket status:', status);
-
-    // If disconnected, try to reconnect
     if (!WebSocketService.isConnectedAndReady()) {
       toast({
         title: 'Połączenie',
         description: 'Próba ponownego nawiązania połączenia z serwerem...',
       });
-
-      // Disconnect first to clean up any existing connection
       WebSocketService.disconnect();
-
-      // Then reconnect
       setTimeout(() => {
-        const userName = inertiaUser.value?.name || user.value?.name || 'User';
-        // Nie przekazujemy tokenu, zostanie pobrany z page.props.user.ws_token lub localStorage
-        WebSocketService.connect(String(userId), userName);
+        WebSocketService.connect(String(authInfo.id), authInfo.name, authInfo.ws_token || '');
       }, 500);
     } else {
       toast({
@@ -673,6 +469,51 @@ onBeforeUnmount(() => {
   // Remove event listeners to prevent memory leaks
   WebSocketService.disconnect();
 });
+
+function transformCardData(card: any) {
+  const rankMap: { [key: string]: number } = { '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14 };
+  const rankValue = rankMap[card.value] || 0;
+  let cardSymbol = '';
+  let symbolColorClass = '';
+  switch (card.suit) {
+    case 'hearts': cardSymbol = '♥'; symbolColorClass = 'text-red-600'; break;
+    case 'diamonds': cardSymbol = '♦'; symbolColorClass = 'text-red-600'; break;
+    case 'clubs': cardSymbol = '♣'; symbolColorClass = 'text-gray-800 dark:text-gray-200'; break;
+    case 'spades': cardSymbol = '♠'; symbolColorClass = 'text-gray-800 dark:text-gray-200'; break;
+    default: cardSymbol = '?'; symbolColorClass = '';
+  }
+  const cardRank = card.value?.toUpperCase?.() || '';
+  const header = `${cardRank}${cardSymbol}`;
+  return {
+    ...card,
+    value: card.value,
+    header,
+    cardRank,
+    cardSymbol,
+    symbolColorClass,
+    rankValue,
+  };
+}
+
+function getAuthInfo() {
+  const page = usePage();
+  if (user.value && user.value.id && user.value.name) {
+    return {
+      id: user.value.id,
+      name: user.value.name,
+      token: null,
+    };
+  }
+  const pageUser = (page.props && (page.props as any).user) ? (page.props as any).user : null;
+  if (pageUser && pageUser.id && pageUser.name) {
+    return {
+      id: pageUser.id,
+      name: pageUser.name,
+      ws_token: pageUser.ws_token,
+    };
+  }
+  return null;
+}
 </script>
 
 <template>
@@ -715,7 +556,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="flex items-center space-x-4">
-            <!-- WebSocket status indicator -->
             <div
               class="px-2 py-1 rounded text-xs font-semibold flex items-center gap-1"
               :class="{
@@ -746,7 +586,7 @@ onBeforeUnmount(() => {
               Powrót do listy gier
             </Link>
 
-                          <template v-if="isCurrentPlayerInGame">
+            <template v-if="isCurrentPlayerInGame">
               <button
                 @click="handleLeaveRoom"
                 class="inline-flex items-center px-4 py-2 bg-red-600 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest hover:bg-red-500 active:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150"
@@ -754,19 +594,19 @@ onBeforeUnmount(() => {
                 Opuść grę
               </button>
 
-              <!-- Ready status button for all players -->
               <button
                 @click="toggleReady"
+                :disabled="!gameState.roomId || !isCurrentPlayerInGame"
                 :class="{
                   'inline-flex items-center px-4 py-2 border border-transparent rounded-md font-semibold text-xs text-white uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-offset-2 transition ease-in-out duration-150': true,
                   'bg-green-600 hover:bg-green-500 active:bg-green-700 focus:ring-green-500': !playerReady,
-                  'bg-yellow-600 hover:bg-yellow-500 active:bg-yellow-700 focus:ring-yellow-500': playerReady
+                  'bg-yellow-600 hover:bg-yellow-500 active:bg-yellow-700 focus:ring-yellow-500': playerReady,
+                  'opacity-50 cursor-not-allowed': !gameState.roomId || !isCurrentPlayerInGame
                 }"
               >
                 {{ playerReady ? 'Nie jestem gotowy' : 'Jestem gotowy' }}
               </button>
 
-              <!-- Start game button only for room creator -->
               <button
                 v-if="isRoomCreator"
                 @click="handleStartGame"
@@ -808,10 +648,10 @@ onBeforeUnmount(() => {
                 <div>
                   <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">
                     {{ player.username || 'Gracz' }}
-                    <span v-if="user && player.user_id === user.id" class="text-xs text-gray-500 dark:text-gray-400">(Ty)</span>
+                    <span v-if="user && (player.user_id === user.id || player.id === user.id)" class="text-xs text-gray-500 dark:text-gray-400">(Ty)</span>
                   </h4>
                   <p class="text-xs text-gray-500 dark:text-gray-400">
-                    Status: {{ player.status === 'ready' ? 'Gotowy' : 'Oczekuje' }}
+                    Status: {{ player.status === 'ready' ? 'Gotowy' : 'Nie gotowy' }}
                   </p>
                 </div>
               </div>

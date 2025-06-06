@@ -2,10 +2,10 @@
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue';
 import { Head } from '@inertiajs/vue3';
 import WebSocketService, { gameState } from '@/Services/WebSocketService';
-import MainLayout from
-import { Button } from '@/Components/ui/button';
-import { Card, CardContent, CardFooter, CardHeader } from '@/Components/ui/card';
-import { useToast } from '@/Components/ui/use-toast';
+import MainLayout from '@/layouts/MainLayout.vue';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
+import { useToast } from '@/components/ui/use-toast';
 
 interface Props {
   game: {

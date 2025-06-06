@@ -18,35 +18,27 @@ interface PlayerHandProps {
 
 const props = defineProps<PlayerHandProps>();
 
-// Obliczone style dla zakrzywionego efektu kart
 const getCardStyle = (index: number, totalCards: number) => {
-    // Nowe, bardziej zwarte wartości dla zakrzywienia
-    const rotationDegrees = [-10, -5, 0, 5, 10]; // Zwiększono obrót, ale zmniejszono odstępy
-    const translateYPixels = [10, 5, 0, 5, 10]; // Mniejsze przesunięcie Y
-
-    // Przesunięcie X dla efektu "rozłożenia" kart
-    const translateXValues = [-25, -12, 0, 12, 25]; // Przesunięcie X w pixelach
-
-    if (index < totalCards) { // Upewnij się, że index jest prawidłowy
+    const rotationDegrees = [-10, -5, 0, 5, 10];
+    const translateYPixels = [10, 5, 0, 5, 10];
+    const translateXValues = [-25, -12, 0, 12, 25];
+    if (index < totalCards) {
         return {
             transform: `translateX(${translateXValues[index]}px) rotateZ(${rotationDegrees[index]}deg) translateY(${translateYPixels[index]}px)`,
-            transformOrigin: 'bottom center', // Punkt obrotu na dole karty
-            zIndex: index, // Zwiększanie z-indexu dla efektu nakładania
-            // Możesz zmniejszyć szerokość kart dla graczy AI, jeśli są zbyt duże
-            width: '60px', /* Domyślna szerokość karty */
-            height: '80px', /* Domyślna wysokość karty */
-            // Zmniejsz rozmiar kart dla graczy bocznych (nie dla głównego gracza)
-            // W GameBoard.vue będziemy renderować PlayerHand z odpowiednimi rozmiarami.
+            transformOrigin: 'bottom center',
+            zIndex: index,
+            width: '60px',
+            height: '80px',
         };
     }
-    return {}; // Domyślne style, jeśli poza zakresem
+    return {};
 };
 </script>
 
 <template>
     <div
         :class="[
-      'player-hand-container', // Zmieniono nazwę klasy, aby uniknąć kolizji z GameBoard.vue
+      'player-hand-container',
       'flex',
       'justify-center',
       'relative',
@@ -72,18 +64,15 @@ const getCardStyle = (index: number, totalCards: number) => {
 
 <style scoped>
 .player-hand-container {
-    /* Upewnij się, że ten kontener jest elastyczny i może być obracany w GameBoard */
 }
 
 .player-card {
-    /* Nadaj stałą szerokość i wysokość, aby karty nie były zbyt duże */
-    width: 60px; /* Standardowa szerokość karty */
-    height: 80px; /* Standardowa wysokość karty */
-    margin-left: -20px; /* Zmniejsz odstęp między kartami */
-    transition: transform 0.2s ease; /* Płynna animacja przy wybieraniu */
+    width: 60px;
+    height: 80px;
+    margin-left: -20px;
+    transition: transform 0.2s ease;
 }
 
-/* Pierwsza karta nie ma lewego marginesu */
 .player-card:first-of-type {
     margin-left: 0;
 }

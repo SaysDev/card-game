@@ -2,250 +2,1131 @@
 
 namespace App\Servers;
 
-use App\Servers\Handlers\AuthenticationHandler;
-use App\Servers\Handlers\GameHandler;
-use App\Servers\Handlers\RoomHandler;
-use App\Servers\Storage\MemoryStorage;
+use OpenSwoole\WebSocket\Server;
 use OpenSwoole\Http\Request;
 use OpenSwoole\Http\Response;
 use OpenSwoole\WebSocket\Frame;
-use OpenSwoole\WebSocket\Server;
+use OpenSwoole\Coroutine;
+use App\Servers\Storage\RoomStorage;
+use App\Servers\Storage\GameServerStorage;
+use App\Services\WebSocketAuthService;
+use App\Models\User;
+use App\Servers\Utilities\Logger;
+use App\Servers\Handlers\RoomHandler;
+use App\Servers\Handlers\AuthenticationHandler;
+use App\Servers\Handlers\GameHandler;
+use App\Servers\Storage\MemoryStorage;
+use App\Servers\Handlers\ServerHandler;
 
 class WebSocketServer
 {
     private Server $server;
+    private RoomStorage $roomStorage;
+    private GameServerStorage $gameServerStorage;
+    private array $clients = [];
+    private array $gameServers = [];
+    private Logger $logger;
+    private WebSocketAuthService $auth;
+    private array $rooms = [];
+    private array $authenticatedClients = [];
     private MemoryStorage $storage;
-    private AuthenticationHandler $authHandler;
+    private array $roomServers = [];
+    private array $pendingRoomJoins = [];
     private RoomHandler $roomHandler;
+    private AuthenticationHandler $authHandler;
     private GameHandler $gameHandler;
+    private ServerHandler $serverHandler;
 
-    public function __construct(string $host = '0.0.0.0', int $port = 9502)
+    public function __construct(string $host, int $port, Logger $logger)
     {
-        // Initialize server
         $this->server = new Server($host, $port);
-
-        // Configure server settings
-        $this->server->set([
-            'worker_num' => 4,            // Number of worker processes
-            'task_worker_num' => 2,       // Number of task worker processes
-            'max_request' => 1000,        // Max number of requests before worker restarts
-            'heartbeat_check_interval' => 60,  // Check for dead connections
-            'heartbeat_idle_time' => 120,      // Connection idle time before closing
-        ]);
-
-        // Initialize storage
+        $this->auth = new WebSocketAuthService();
         $this->storage = new MemoryStorage();
-
+        $this->logger = $logger;
+        
+        // Pokaż PID procesu w logach
+        Logger::showPid(true);
+        
         // Initialize handlers
+        $this->roomHandler = new RoomHandler($this->server, $this->storage, $this->logger);
         $this->authHandler = new AuthenticationHandler($this->storage);
-        $this->roomHandler = new RoomHandler($this->storage);
-        $this->gameHandler = new GameHandler($this->storage);
-
-        // Register event callbacks
-        $this->registerEventHandlers();
+        $this->gameHandler = new GameHandler($this->server, $this->storage, $this->logger);
+        $this->serverHandler = new ServerHandler($this->server, $this->storage, $this->logger);
+        
+        $this->setupEventHandlers();
     }
 
-    private function registerEventHandlers(): void
+    private function setupEventHandlers(): void
     {
-        // Handle WebSocket open connection
-        $this->server->on('open', function (Server $server, Request $request) {
-            $fd = $request->fd;
-            echo "Connection opened: {$fd}\n";
+        $this->server->on('start', [$this, 'onStart']);
+        $this->server->on('connect', [$this, 'onConnect']);
+        $this->server->on('open', [$this, 'onOpen']);
+        $this->server->on('message', [$this, 'onMessage']);
+        $this->server->on('close', [$this, 'onClose']);
+    }
 
-            // Initialize connection
-            $this->storage->setConnection($fd, [
-                'fd' => $fd,
-                'user_id' => 0,
-                'connected_at' => time()
-            ]);
+    public function onStart(Server $server): void
+    {
+        $this->logger->info("WebSocket server started");
+    }
 
-            // Send welcome message
-            $server->push($fd, json_encode([
-                'type' => 'connection',
-                'status' => 'success',
-                'message' => 'Connected to Card Game WebSocket server'
-            ]));
-        });
+    public function onOpen(Server $server, Request $request): void
+    {
+        $this->logger->info("Client connected", ['fd' => $request->fd]);
+        // Initialize as a generic connection instead of forcing 'client' type
+        // This avoids overriding server registrations that happen later
+        $this->clients[$request->fd] = [
+            'type' => 'connection', // Changed from 'client' to 'connection'
+            'room_id' => null
+        ];
+        
+        // Debug current connections
+        $serverCount = 0;
+        $clientCount = 0;
+        foreach ($this->clients as $fd => $client) {
+            if (isset($client['type']) && $client['type'] === 'server') {
+                $serverCount++;
+            } else if (isset($client['type']) && ($client['type'] === 'connection' || $client['type'] === 'client')) {
+                $clientCount++;
+            }
+        }
+        
+        $this->logger->debug("Connection statistics", [
+            'total_connections' => count($this->clients),
+            'server_connections' => $serverCount,
+            'client_connections' => $clientCount,
+            'gameServers_count' => count($this->gameServers)
+        ]);
+    }
 
-        // Handle WebSocket messages
-        $this->server->on('message', function (Server $server, Frame $frame) {
-            $fd = $frame->fd;
-            $data = json_decode($frame->data, true);
+    public function onMessage(Server $server, Frame $frame): void
+    {
+        $data = json_decode($frame->data, true);
+        if (!$data || !isset($data['type'])) {
+            $this->sendError($frame->fd, 'Invalid message format');
+            return;
+        }
 
-            if (!$data || !isset($data['action'])) {
-                $server->push($fd, json_encode([
-                    'type' => 'error',
-                    'message' => 'Invalid message format'
-                ]));
+        switch ($data['type']) {
+            case 'auth':
+                $this->authHandler->handleAuthentication($server, $frame->fd, $data);
+                break;
+            case 'matchmaking_join':
+                $this->handleMatchmakingJoin($frame->fd, $data);
+                break;
+            case 'game_action':
+                $this->gameHandler->handleGameAction($server, $frame->fd, $data);
+                break;
+            case 'register_server':
+                $this->serverHandler->handleRegisterServer($frame->fd, $data);
+                break;
+            case 'register_room':
+                $this->handleRegisterRoom($data);
+                break;
+            case 'room_created_ack':
+                $this->handleRoomCreatedAck($data);
+                break;
+            case 'player_added_to_room_ack':
+                $this->handlePlayerAddedToRoomAck($data);
+                break;
+            default:
+                $this->sendError($frame->fd, 'Unknown message type');
+        }
+    }
+
+    public function onConnect(Server $server, int $fd): void
+    {
+        // Intentionally left empty as onOpen already logs the connection
+    }
+
+    private function handleAuthentication(int $fd, array $data): void
+    {
+        try {
+            $token = $data['token'] ?? null;
+            if (!$token) {
+                $this->logger->warning("Missing authentication token", ['fd' => $fd]);
+                $this->sendError($fd, "Missing authentication token");
                 return;
             }
-            $action = $data['action'];
-            $room = $data['room_id'] ?? '';
 
-            // Debug log with readable format
-            $debugData = [];
-            foreach ($data as $key => $value) {
-                if (is_scalar($value)) {
-                    $debugData[] = "{$key}: {$value}";
-                } else {
-                    $debugData[] = "{$key}: " . json_encode($value);
-                }
-            }
-            $debug = implode(', ', $debugData);
-            echo "[{$data['action']}]Received message: {$debug} \n";
-            // Route messages to appropriate handlers
-            switch ($data['action']) {
-
-                // Authentication actions
-                case 'authenticate':
-                    $this->authHandler->handleAuthentication($server, $fd, $data);
-                    break;
-
-                // Room management actions
-                case 'create_room':
-                    $this->roomHandler->handleCreateRoom($server, $fd, $data);
-                    break;
-
-                case 'join_room':
-                    $this->roomHandler->handleJoinRoom($server, $fd, $data);
-                    break;
-
-                case 'leave_room':
-                    $this->roomHandler->handleLeaveRoom($server, $fd);
-                    break;
-
-                case 'list_rooms':
-                    $this->roomHandler->handleListRooms($server, $fd);
-                    break;
-
-                // Player ready status
-                case 'set_ready_status':
-                    if (method_exists($this->roomHandler, 'handleSetReadyStatus')) {
-                        $this->roomHandler->handleSetReadyStatus($server, $fd, $data);
-                    } else {
-                        // Fallback if method doesn't exist yet
-                        $server->push($fd, json_encode([
-                            'type' => 'error',
-                            'message' => 'Set ready status handler not implemented'
-                        ]));
+            $authData = $this->auth->validateToken($token);
+            if (!$authData) {
+                // For server tokens, try to generate a new one
+                if (isset($data['type']) && $data['type'] === 'server') {
+                    $this->logger->info("Generating new server token");
+                    $newToken = $this->auth->generateServerToken();
+                    if ($token === $newToken) {
+                        $this->logger->info("Server authenticated", ['fd' => $fd]);
+                        $this->clients[$fd] = [
+                            'type' => 'server',
+                            'authenticated' => true,
+                            'last_ping' => time()
+                        ];
+                        $this->sendMessage($fd, [
+                            'type' => 'auth_success',
+                            'message' => 'Server authenticated successfully'
+                        ]);
+                        return;
                     }
-                    break;
-
-                // Game actions
-                case 'game_action':
-                    $this->gameHandler->handleGameAction($server, $fd, $data);
-                    break;
-
-                default:
-                    $server->push($fd, json_encode([
-                        'type' => 'error',
-                        'message' => 'Unknown action: ' . $data['action']
-                    ]));
+                }
+                
+                $this->logger->warning("Invalid authentication token", ['fd' => $fd]);
+                $this->sendError($fd, "Invalid token");
+                return;
             }
-        });
 
-        // Handle WebSocket close
-        $this->server->on('close', function (Server $server, int $fd) {
-            echo "Connection closed: {$fd}\n";
+            // Store client info
+            $this->clients[$fd] = [
+                'type' => $authData['type'],
+                'authenticated' => true,
+                'last_ping' => time(),
+                'user_id' => $authData['user_id'] ?? null,
+                'username' => $authData['username'] ?? null
+            ];
 
-            // Clean up player data
+            if ($authData['type'] === 'server') {
+                $this->logger->info("Server authenticated", ['fd' => $fd]);
+                $this->sendMessage($fd, [
+                    'type' => 'auth_success',
+                    'message' => 'Server authenticated successfully'
+                ]);
+            } else {
+                $this->logger->info("User authenticated", [
+                    'fd' => $fd,
+                    'user_id' => $authData['user_id'],
+                    'username' => $authData['username']
+                ]);
+                $this->sendMessage($fd, [
+                    'type' => 'auth_success',
+                    'message' => 'User authenticated successfully',
+                    'user' => [
+                        'id' => $authData['user_id'],
+                        'username' => $authData['username']
+                    ]
+                ]);
+            }
+        } catch (\Exception $e) {
+            $this->logger->error("Authentication error", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+            $this->sendError($fd, "Authentication failed: " . $e->getMessage());
+        }
+    }
+
+    private function handleRegisterServer(int $fd, array $data): void
+    {
+        try {
+            $serverId = $data['server_id'] ?? null;
+            $capacity = $data['capacity'] ?? null;
+
+            if (!$serverId || !$capacity) {
+                $this->logger->warning("Missing server registration data", ['fd' => $fd]);
+                $this->sendError($fd, "Missing server_id or capacity");
+                return;
+            }
+
+            // Store server info in the clients array
+            $this->clients[$fd] = [
+                'type' => 'server',
+                'authenticated' => true,
+                'server_id' => $serverId,
+                'capacity' => $capacity,
+                'last_ping' => time()
+            ];
+            
+            // Also store in gameServers for tracking
+            $this->gameServers[$fd] = [
+                'server_id' => $serverId,
+                'capacity' => $capacity,
+                'last_ping' => time()
+            ];
+
+            $this->logger->info("Game server registered", [
+                'fd' => $fd,
+                'server_id' => $serverId,
+                'capacity' => $capacity,
+                'gameServers_count' => count($this->gameServers)
+            ]);
+
+            // Log current server counts
+            $serverCount = count(array_filter($this->clients, function($client) {
+                return isset($client['type']) && $client['type'] === 'server';
+            }));
+
+            $this->logger->debug("Server registration status", [
+                'gameServers_count' => count($this->gameServers),
+                'servers_in_clients' => $serverCount,
+                'all_clients' => array_map(function($client) {
+                    return $client['type'] ?? 'unknown';
+                }, $this->clients)
+            ]);
+
+            $this->sendMessage($fd, [
+                'type' => 'server_registered',
+                'message' => 'Server registered successfully',
+                'server_id' => $serverId
+            ]);
+        } catch (\Exception $e) {
+            $this->logger->error("Error registering server", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+            $this->sendError($fd, "Error registering server: " . $e->getMessage());
+        }
+    }
+
+    private function handleHeartbeat(int $fd): void
+    {
+        try {
+            // Get client info
             $player = $this->storage->getPlayer($fd);
-            if ($player) {
-                $userId = $player['user_id'];
-                $roomId = $player['room_id'];
+            $isServer = isset($this->clients[$fd]) && $this->clients[$fd]['type'] === 'server';
+            
+            // Update last ping time for all clients
+            if (isset($this->clients[$fd])) {
+                $this->clients[$fd]['last_ping'] = time();
+            }
+            
+            // For regular users, just log the heartbeat but don't send a response
+            // This prevents unnecessary traffic to user clients
+            if (!$isServer) {
+                $this->logger->debug("User heartbeat received", ['fd' => $fd]);
+                return;
+            }
+            
+            // Only send heartbeat_ack to servers
+            $this->logger->debug("Server heartbeat received", ['fd' => $fd]);
+            $this->sendMessage($fd, [
+                'type' => 'heartbeat_ack'
+            ]);
+        } catch (\Exception $e) {
+            $this->logger->error("Error handling heartbeat", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
 
-                echo "Closing connection for user ID: {$userId}, room ID: {$roomId}\n";
+    private function handlePing(int $fd): void
+    {
+        try {
+            // Get client info
+            $isServer = isset($this->clients[$fd]) && $this->clients[$fd]['type'] === 'server';
+            
+            // For regular users, just log the ping but don't send a response
+            if (!$isServer) {
+                $this->logger->debug("User ping received", ['fd' => $fd]);
+                return;
+            }
+            
+            // Only send pong to servers
+            $this->logger->info("Server ping received", ['fd' => $fd]);
+            $this->sendMessage($fd, [
+                'type' => 'pong'
+            ]);
+        } catch (\Exception $e) {
+            $this->logger->error("Error handling ping", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
 
-                // If player was in a room, update room data
-                if ($roomId && $this->storage->roomExists($roomId)) {
-                    // Check if this user has any other active connections in this room
-                    $otherConnectionsInRoom = false;
+    private function handleCreateRoom(int $fd, array $data): void
+    {
+        if (!isset($data['room_id'])) {
+            $this->logger->warning("Missing room_id for create_room", ['fd' => $fd]);
+            $this->sendError($fd, "Missing room_id");
+            return;
+        }
 
-                    $connections = $this->storage->getConnectionsByUserId($userId);
-                    foreach ($connections as $connectionFd => $connectionData) {
-                        if ($connectionFd !== $fd && $connectionData['room_id'] === $roomId) {
-                            $otherConnectionsInRoom = true;
-                            break;
+        $roomId = $data['room_id'];
+        if (isset($this->rooms[$roomId])) {
+            $this->logger->warning("Room already exists", ['room_id' => $roomId]);
+            $this->sendError($fd, "Room already exists");
+            return;
+        }
+
+        $this->rooms[$roomId] = [
+            'players' => [],
+            'game_server' => null
+        ];
+
+        $this->logger->info("Room created", ['room_id' => $roomId]);
+        $this->sendMessage($fd, [
+            'type' => 'room_created',
+            'room_id' => $roomId
+        ]);
+    }
+
+    private function handleJoinRoom(int $fd, array $data): void
+    {
+        // Check for required data
+        if (!isset($data['room_id'])) {
+            $this->logger->warning("Missing room_id for join_room", ['fd' => $fd]);
+            $this->sendError($fd, "Missing room_id");
+            return;
+        }
+
+        // Get player info from storage
+        $player = $this->storage->getPlayer($fd);
+        if (!$player) {
+            $this->logger->warning("Player not found for join_room", ['fd' => $fd]);
+            $this->sendError($fd, "Authentication required");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        if (!$this->storage->roomExists($roomId)) {
+            $this->logger->warning("Room does not exist", ['room_id' => $roomId]);
+            $this->sendError($fd, "Room not found");
+            return;
+        }
+
+        $room = $this->storage->getRoom($roomId);
+        $gameData = json_decode($room['game_data'], true);
+
+        // Check if room is full
+        if (isset($gameData['players']) && count($gameData['players']) >= $room['max_players']) {
+            $this->logger->warning("Room is full", ['room_id' => $roomId]);
+            $this->sendError($fd, "Room is full");
+            return;
+        }
+
+        // Add player to room
+        if (!isset($gameData['players'])) {
+            $gameData['players'] = [];
+        }
+        $gameData['players'][] = $fd;
+        $gameData['last_updated'] = time();
+
+        // Update room in storage
+        $this->storage->updateRoom($roomId, [
+            'name' => $room['name'],
+            'status' => $room['status'],
+            'max_players' => $room['max_players'],
+            'current_players' => count($gameData['players']),
+            'game_data' => json_encode($gameData),
+            'created_at' => $room['created_at']
+        ]);
+
+        // Update player in storage
+        $this->storage->setPlayer($fd, [
+            'user_id' => $player['user_id'],
+            'username' => $player['username'],
+            'room_id' => $roomId,
+            'status' => 'not_ready',
+            'cards' => '[]',
+            'score' => $player['score'] ?? 0,
+            'last_activity' => time()
+        ]);
+
+        $this->logger->info("Player joined room", [
+            'fd' => $fd,
+            'user_id' => $player['user_id'],
+            'username' => $player['username'],
+            'room_id' => $roomId
+        ]);
+
+        // Get all players in the room for the response
+        $playersInRoom = [];
+        foreach ($gameData['players'] as $playerFd) {
+            if ($this->storage->playerExists($playerFd)) {
+                $playerInfo = $this->storage->getPlayer($playerFd);
+                $playersInRoom[] = [
+                    'user_id' => $playerInfo['user_id'],
+                    'username' => $playerInfo['username'],
+                    'status' => $playerInfo['status'] ?? 'not_ready',
+                    'ready' => ($playerInfo['status'] ?? '') === 'ready'
+                ];
+            }
+        }
+
+        // Send success message to the joining player
+        $this->sendMessage($fd, [
+            'type' => 'room_joined',
+            'room_id' => $roomId,
+            'room_name' => $room['name'],
+            'players' => $playersInRoom
+        ]);
+
+        // Broadcast room update to all players
+        $this->broadcastRoomUpdate($roomId);
+        
+        // Notify the game server about the player joining
+        $serverId = $this->getGameServerForRoom($roomId);
+        if ($serverId) {
+            $gameServerFd = $this->findGameServerFdById($serverId);
+            if ($gameServerFd) {
+                $this->sendMessage($gameServerFd, [
+                    'type' => 'add_player_to_room',
+                    'room_id' => $roomId,
+                    'player_id' => $player['user_id'],
+                    'player_fd' => $fd,
+                    'username' => $player['username']
+                ]);
+            }
+        }
+    }
+
+    private function handleLeaveRoom(int $fd, array $data): void
+    {
+        // Get player info from storage
+        $player = $this->storage->getPlayer($fd);
+        if (!$player) {
+            $this->logger->warning("Player not found for leave_room", ['fd' => $fd]);
+            return;
+        }
+
+        // Check if room_id is provided in the data
+        $roomId = $data['room_id'] ?? $player['room_id'] ?? null;
+        if (!$roomId) {
+            $this->logger->warning("No room_id for leave_room", ['fd' => $fd]);
+            $this->sendError($fd, "Missing room_id");
+            return;
+        }
+
+        // Get player_id from data or player info
+        $playerId = $data['player_id'] ?? $player['user_id'] ?? null;
+        if (!$playerId) {
+            $this->logger->warning("No player_id for leave_room", ['fd' => $fd]);
+            $this->sendError($fd, "Missing player_id");
+            return;
+        }
+
+        $this->logger->info("Player leaving room", [
+            'fd' => $fd,
+            'player_id' => $playerId,
+            'room_id' => $roomId
+        ]);
+
+        // Update player in storage to remove room association
+        $this->storage->setPlayer($fd, [
+            'user_id' => $player['user_id'],
+            'username' => $player['username'],
+            'room_id' => '',
+            'status' => 'online',
+            'cards' => '[]',
+            'score' => $player['score'] ?? 0,
+            'last_activity' => time()
+        ]);
+
+        // Handle room in memory storage
+        $room = $this->storage->getRoom($roomId);
+        if ($room) {
+            $gameData = json_decode($room['game_data'], true);
+            
+            // Remove player from the room's players array
+            if (isset($gameData['players'])) {
+                $gameData['players'] = array_values(array_filter($gameData['players'], function($playerFd) use ($fd) {
+                    return $playerFd != $fd;
+                }));
+                $gameData['last_updated'] = time();
+                
+                // Update or remove room
+                if (empty($gameData['players'])) {
+                    $this->storage->removeRoom($roomId);
+                    $this->logger->info("Room removed (empty)", ['room_id' => $roomId]);
+                } else {
+                    $this->storage->updateRoom($roomId, [
+                        'name' => $room['name'],
+                        'status' => $room['status'],
+                        'max_players' => $room['max_players'],
+                        'current_players' => count($gameData['players']),
+                        'game_data' => json_encode($gameData),
+                        'created_at' => $room['created_at']
+                    ]);
+                    
+                    // Notify remaining players
+                    foreach ($gameData['players'] as $playerFd) {
+                        if ($this->server->isEstablished($playerFd)) {
+                            $this->sendMessage($playerFd, [
+                                'type' => 'player_left',
+                                'user_id' => $playerId,
+                                'username' => $player['username'],
+                                'room_id' => $roomId
+                            ]);
                         }
                     }
+                }
+            }
+        }
 
-                    // Only remove from room if no other connections exist
-                    if (!$otherConnectionsInRoom) {
-                        echo "No other connections for user {$userId} in room {$roomId}, removing from room\n";
-                        $this->roomHandler->handleLeaveRoom($server, $fd);
-                    } else {
-                        echo "User {$userId} has other active connections in room {$roomId}, not removing from room\n";
+        // Confirm to the leaving player
+        $this->sendMessage($fd, [
+            'type' => 'left_room',
+            'room_id' => $roomId
+        ]);
+    }
+
+    private function handleGameAction(int $fd, array $data): void
+    {
+        if (!isset($data['player_id']) || !isset($data['room_id']) || !isset($data['action'])) {
+            $this->logger->warning("Invalid game action data");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        $this->logger->info("Game action received", [
+            'player_id' => $data['player_id'],
+            'room_id' => $roomId,
+            'action' => $data['action']
+        ]);
+
+        // Broadcast action to all players in the room
+        $this->broadcastToRoom($roomId, [
+            'type' => 'game_action',
+            'player_id' => $data['player_id'],
+            'room_id' => $roomId,
+            'action' => $data['action']
+        ]);
+    }
+
+    private function broadcastToRoom(string $roomId, array $message): void
+    {
+        if (!$this->storage->roomExists($roomId)) {
+            $this->logger->warning("Room not found for broadcast", ['room_id' => $roomId]);
+            return;
+        }
+
+        $room = $this->storage->getRoom($roomId);
+        $gameData = json_decode($room['game_data'], true);
+        
+        if (!isset($gameData['players']) || !is_array($gameData['players'])) {
+            $this->logger->warning("No players in room for broadcast", ['room_id' => $roomId]);
+            return;
+        }
+        
+        foreach ($gameData['players'] as $playerFd) {
+            if ($this->server->isEstablished($playerFd)) {
+                $this->sendMessage($playerFd, $message);
+            }
+        }
+    }
+
+    public function onClose(Server $server, int $fd): void
+    {
+        try {
+            // Check if this was a server
+            $isServer = isset($this->clients[$fd]) && isset($this->clients[$fd]['type']) && $this->clients[$fd]['type'] === 'server';
+            $serverId = $isServer && isset($this->clients[$fd]['server_id']) ? $this->clients[$fd]['server_id'] : null;
+            
+            if ($isServer) {
+                $this->logger->info("Game server disconnected", [
+                    'fd' => $fd,
+                    'server_id' => $serverId ?? 'unknown'
+                ]);
+                
+                // Remove from gameServers array
+                if (isset($this->gameServers[$fd])) {
+                    unset($this->gameServers[$fd]);
+                    $this->logger->debug("Removed server from gameServers array", [
+                        'fd' => $fd, 
+                        'remaining_servers' => count($this->gameServers)
+                    ]);
+                }
+                
+                // Update all rooms that were on this server
+                if ($serverId) {
+                    foreach ($this->roomServers as $roomId => $roomServerId) {
+                        if ($roomServerId === $serverId) {
+                            $this->logger->warning("Room lost its server", ['room_id' => $roomId]);
+                            unset($this->roomServers[$roomId]);
+                            
+                            // Notify players in that room
+                            if ($this->storage->roomExists($roomId)) {
+                                $room = $this->storage->getRoom($roomId);
+                                $gameData = json_decode($room['game_data'], true);
+                                if (isset($gameData['players']) && is_array($gameData['players'])) {
+                                    foreach ($gameData['players'] as $playerFd) {
+                                        if ($this->server->isEstablished($playerFd)) {
+                                            $this->sendMessage($playerFd, [
+                                                'type' => 'server_disconnected',
+                                                'message' => 'Game server disconnected, please rejoin matchmaking.'
+                                            ]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-
-                // Remove player data
+            } else {
+                // Handle regular client disconnect
+                $player = $this->storage->getPlayer($fd);
+                $userId = $player ? ($player['user_id'] ?? 'unknown') : 'unknown';
+                $username = $player ? ($player['username'] ?? 'unknown') : 'unknown';
+                
+                $this->logger->info("Client disconnected", [
+                    'fd' => $fd,
+                    'user_id' => $userId,
+                    'username' => $username
+                ]);
+                
+                // Handle player leaving room
+                if ($player && isset($player['room_id']) && $player['room_id']) {
+                    $this->handleLeaveRoom($fd, ['room_id' => $player['room_id']]);
+                }
+                
+                // Remove player from storage
                 $this->storage->removePlayer($fd);
             }
-
-            // Remove connection record
-            $this->storage->removeConnection($fd);
-        });
-
-        // Handle HTTP requests
-        $this->server->on('request', function (Request $request, Response $response) {
-            $response->header('Content-Type', 'application/json');
-            $response->end(json_encode([
-                'status' => 'error',
-                'message' => 'This is a WebSocket server, please connect using WebSocket protocol'
-            ]));
-        });
-
-        // Handle tasks
-        $this->server->on('task', function (Server $server, int $taskId, int $workerId, $data) {
-            // Process background tasks
-            if (isset($data['type'])) {
-                switch ($data['type']) {
-                    case 'room_cleanup':
-                        $this->storage->cleanupInactiveRooms();
-                        break;
-
-                    case 'game_update':
-                        $this->gameHandler->processGameUpdate($server, $data['room_id'] ?? '');
-                        break;
-
-                    case 'start_new_game':
-                        if (isset($data['room_id']) && $data['delay'] > 0) {
-                            sleep($data['delay']);
-                            $this->gameHandler->startNewGameInRoom($server, $data['room_id']);
-                        }
-                        break;
-                }
-            }
-
-            return true;
-        });
-
-        // Handle task completion
-        $this->server->on('finish', function (Server $server, int $taskId, string $data) {
-            echo "Task finished: {$taskId}\n";
-        });
+            
+            // Always remove from clients array
+            unset($this->clients[$fd]);
+            
+        } catch (\Exception $e) {
+            $this->logger->error("Error in onClose", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 
     public function start(): void
     {
-        echo "Starting WebSocket server on {$this->server->host}:{$this->server->port}\n";
+        $this->logger->info("Starting WebSocket server");
+        $this->server->start();
+    }
 
-        // Check if Xdebug is enabled and warn the user
-        if (extension_loaded('xdebug')) {
-            echo "\033[33mWARNING: Xdebug is enabled. This may cause instability with OpenSwoole.\033[0m\n";
-            echo "Consider disabling Xdebug when running the WebSocket server.\n";
-            echo "You can temporarily disable Xdebug with: php -n (to disable PHP extensions)\n";
-            echo "or by setting xdebug.mode=off in your php.ini\n";
-            echo "Attempting to disable Xdebug for this session...\n";
+    private function sendMessage(int $fd, array $data): void
+    {
+        try {
+            $this->server->push($fd, json_encode($data));
+        } catch (\Exception $e) {
+            $this->logger->error("Failed to send message", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
 
-            // Try to disable Xdebug functions that cause issues with coroutines
-            if (function_exists('xdebug_disable')) {
-                xdebug_disable();
-                echo "Xdebug disabled for this session.\n";
+    private function sendError(int $fd, string $message): void
+    {
+        $this->sendMessage($fd, [
+            'type' => 'error',
+            'message' => $message
+        ]);
+    }
+
+    private function handleGetOnlineCount(int $fd): void
+    {
+        $count = count(array_filter($this->clients, function($client) {
+            return $client['type'] === 'user' && $client['authenticated'];
+        }));
+
+        $this->sendMessage($fd, [
+            'type' => 'online_count',
+            'count' => $count
+        ]);
+    }
+
+    private function handleMatchmakingJoin(int $fd, array $data): void
+    {
+        $player = $this->storage->getPlayer($fd);
+        if (!$player) {
+            $this->sendError($fd, 'Not authenticated');
+            return;
+        }
+
+        $gameType = $data['game_type'] ?? 'default';
+        $maxPlayers = $data['max_players'] ?? 4;
+        $isPrivate = $data['is_private'] ?? false;
+        $privateCode = $data['private_code'] ?? null;
+
+        // Try to find existing suitable room
+        $roomId = $this->roomHandler->findSuitableRoom($maxPlayers, $isPrivate, $privateCode);
+        
+        if ($roomId) {
+            // Join existing room
+            $gameServerId = $this->serverHandler->getGameServerForRoom($roomId);
+            if ($gameServerId) {
+                $this->roomHandler->addPlayerToRoom($fd, $roomId, $gameServerId);
+                $this->sendMessage($fd, [
+                    'type' => 'matchmaking_success',
+                    'room_id' => $roomId
+                ]);
+            }
+        } else {
+            // Create new room
+            $gameServerFd = $this->serverHandler->findLeastLoadedGameServer();
+            if (!$gameServerFd) {
+                $this->sendError($fd, 'No available game servers');
+                return;
+            }
+
+            $this->roomHandler->createRoomAndAddPlayer($fd, $maxPlayers, $isPrivate, $privateCode);
+        }
+    }
+
+    private function broadcastRoomUpdate(string $roomId): void
+    {
+        if (!$this->storage->roomExists($roomId)) {
+            $this->logger->warning("Room not found for update", ['room_id' => $roomId]);
+            return;
+        }
+
+        $room = $this->storage->getRoom($roomId);
+        $gameData = json_decode($room['game_data'], true);
+        $players = [];
+        
+        if (isset($gameData['players']) && is_array($gameData['players'])) {
+            foreach ($gameData['players'] as $playerFd) {
+                if ($this->storage->playerExists($playerFd)) {
+                    $player = $this->storage->getPlayer($playerFd);
+                    if ($player) {
+                        $this->logger->debug("Adding player to room update", [
+                            'fd' => $playerFd,
+                            'user_id' => $player['user_id'],
+                            'username' => $player['username']
+                        ]);
+                        
+                        $players[] = [
+                            'user_id' => $player['user_id'],
+                            'username' => $player['username'],
+                            'status' => $player['status'] ?? 'not_ready',
+                            'ready' => ($player['status'] ?? '') === 'ready'
+                        ];
+                    }
+                }
             }
         }
 
-        // Start the server
-        $this->server->start();
+        $message = [
+            'type' => 'room_update',
+            'room_id' => $roomId,
+            'room_name' => $room['name'],
+            'players' => $players,
+            'current_players' => count($players),
+            'max_players' => $room['max_players']
+        ];
+
+        $this->logger->debug("Broadcasting room update", [
+            'room_id' => $roomId,
+            'players_count' => count($players),
+            'players' => $players
+        ]);
+
+        // Send to all players in the room
+        if (isset($gameData['players']) && is_array($gameData['players'])) {
+            foreach ($gameData['players'] as $playerFd) {
+                if ($this->server->isEstablished($playerFd)) {
+                    $this->sendMessage($playerFd, $message);
+                }
+            }
+        }
+    }
+
+    private function handlePlayerReady(int $fd, array $data): void
+    {
+        try {
+            // Get player info
+            $player = $this->storage->getPlayer($fd);
+            if (!$player) {
+                $this->logger->warning("Player not found for ready status", ['fd' => $fd]);
+                $this->sendError($fd, "Authentication required");
+                return;
+            }
+
+            // Check if room_id is provided or use player's current room
+            $roomId = $data['room_id'] ?? $player['room_id'] ?? null;
+            if (!$roomId) {
+                $this->logger->warning("No room_id for player ready", ['fd' => $fd]);
+                $this->sendError($fd, "You are not in a room");
+                return;
+            }
+
+            // Check if room exists
+            $room = $this->storage->getRoom($roomId);
+            if (!$room) {
+                $this->logger->warning("Room not found for player ready", ['room_id' => $roomId]);
+                $this->sendError($fd, "Room not found");
+                return;
+            }
+
+            // Get ready status
+            $isReady = isset($data['ready']) && $data['ready'] === true;
+            $newStatus = $isReady ? 'ready' : 'not_ready';
+
+            $this->logger->info("Player ready status change", [
+                'fd' => $fd,
+                'user_id' => $player['user_id'],
+                'username' => $player['username'],
+                'ready' => $isReady
+            ]);
+
+            // Update player in storage
+            $this->storage->setPlayer($fd, [
+                'user_id' => $player['user_id'],
+                'username' => $player['username'],
+                'room_id' => $roomId,
+                'status' => $newStatus,
+                'cards' => $player['cards'] ?? '[]',
+                'score' => $player['score'] ?? 0,
+                'last_activity' => time()
+            ]);
+
+            // Confirm to the player
+            $this->sendMessage($fd, [
+                'type' => 'ready_status_updated',
+                'ready' => $isReady,
+                'status' => $newStatus
+            ]);
+
+            // Notify other players in the room
+            $gameData = json_decode($room['game_data'], true);
+            if (isset($gameData['players']) && is_array($gameData['players'])) {
+                foreach ($gameData['players'] as $playerFd) {
+                    if ($playerFd != $fd && $this->server->isEstablished($playerFd)) {
+                        $this->sendMessage($playerFd, [
+                            'type' => 'player_status_changed',
+                            'player_id' => $player['user_id'],
+                            'username' => $player['username'],
+                            'status' => $newStatus,
+                            'ready' => $isReady
+                        ]);
+                    }
+                }
+            }
+
+            // Update room game data with player status
+            if (!isset($gameData['player_status'])) {
+                $gameData['player_status'] = [];
+            }
+            $gameData['player_status'][$player['user_id']] = [
+                'status' => $newStatus,
+                'ready' => $isReady
+            ];
+            $room['game_data'] = json_encode($gameData);
+            $this->storage->updateRoom($roomId, $room);
+
+            // Check if all players are ready to start the game
+            $this->checkAllPlayersReady($roomId);
+        } catch (\Exception $e) {
+            $this->logger->error("Error handling player ready", [
+                'fd' => $fd,
+                'error' => $e->getMessage()
+            ]);
+            $this->sendError($fd, "Error handling ready status: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * Check if all players in a room are ready to start the game
+     */
+    private function checkAllPlayersReady(string $roomId): void
+    {
+        if (!$this->storage->roomExists($roomId)) {
+            return;
+        }
+
+        $room = $this->storage->getRoom($roomId);
+        $gameData = json_decode($room['game_data'], true);
+
+        // Count ready players
+        $readyCount = 0;
+        $totalCount = 0;
+        $playerStatuses = [];
+
+        if (isset($gameData['players']) && is_array($gameData['players'])) {
+            foreach ($gameData['players'] as $playerFd) {
+                if ($this->storage->playerExists($playerFd)) {
+                    $player = $this->storage->getPlayer($playerFd);
+                    $playerStatuses[] = [
+                        'fd' => $playerFd,
+                        'user_id' => $player['user_id'],
+                        'username' => $player['username'],
+                        'status' => $player['status']
+                    ];
+                    $totalCount++;
+                    if ($player['status'] === 'ready') {
+                        $readyCount++;
+                    }
+                }
+            }
+        }
+
+        $this->logger->info("Room ready status", [
+            'room_id' => $roomId,
+            'ready_count' => $readyCount,
+            'total_count' => $totalCount,
+            'max_players' => $room['max_players'],
+            'player_statuses' => $playerStatuses
+        ]);
+
+        // Start game if all players are ready and we have enough players
+        if ($readyCount >= 2 && $readyCount == $totalCount && $room['status'] === 'waiting') {
+            $this->logger->info("Starting game - all players ready", ['room_id' => $roomId]);
+            $this->startGame($roomId);
+        }
+    }
+
+    /**
+     * Start a game in the specified room
+     */
+    private function startGame(string $roomId): void
+    {
+        if (!$this->storage->roomExists($roomId)) {
+            return;
+        }
+
+        $room = $this->storage->getRoom($roomId);
+        $gameData = json_decode($room['game_data'], true);
+
+        // Update room status
+        $room['status'] = 'playing';
+        $gameData['game_started'] = true;
+        $gameData['start_time'] = time();
+        $room['game_data'] = json_encode($gameData);
+        $this->storage->updateRoom($roomId, $room);
+
+        // Notify all players
+        if (isset($gameData['players']) && is_array($gameData['players'])) {
+            $playerInfos = [];
+            foreach ($gameData['players'] as $playerFd) {
+                if ($this->storage->playerExists($playerFd)) {
+                    $player = $this->storage->getPlayer($playerFd);
+                    $playerInfos[] = [
+                        'user_id' => $player['user_id'],
+                        'username' => $player['username']
+                    ];
+                }
+            }
+            
+            // Send game start notification to all players
+            foreach ($gameData['players'] as $playerFd) {
+                if ($this->storage->playerExists($playerFd)) {
+                    $this->sendMessage($playerFd, [
+                        'type' => 'game_started',
+                        'room_id' => $roomId,
+                        'players' => $playerInfos
+                    ]);
+                }
+            }
+        }
+    }
+
+    /**
+     * Handle room registration from a game server
+     */
+    private function handleRegisterRoom(array $data): void
+    {
+        if (!isset($data['room_id']) || !isset($data['server_id']) || !isset($data['room_data'])) {
+            $this->logger->warning("Invalid register_room data");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        $serverId = $data['server_id'];
+        $roomData = $data['room_data'];
+
+        $this->logger->info("Registering room from game server", [
+            'room_id' => $roomId,
+            'server_id' => $serverId
+        ]);
+
+        // Store the mapping of room to server
+        $this->roomServers[$roomId] = $serverId;
+
+        // Create or update the room in storage if it doesn't exist
+        if (!$this->storage->roomExists($roomId)) {
+            $gameData = [
+                'players' => $roomData['players'] ?? [],
+                'server_id' => $serverId,
+                'last_updated' => time()
+            ];
+            
+            $this->storage->createRoom($roomId, [
+                'name' => $roomData['name'] ?? 'Room ' . $roomId,
+                'status' => $roomData['status'] ?? 'waiting',
+                'max_players' => $roomData['max_players'] ?? 4,
+                'current_players' => $roomData['current_players'] ?? 0,
+                'game_data' => json_encode($gameData),
+                'created_at' => time()
+            ]);
+            
+            $this->logger->info("Room registered from game server", [
+                'room_id' => $roomId,
+                'server_id' => $serverId
+            ]);
+        } else {
+            $this->logger->info("Room already exists, updating server mapping", [
+                'room_id' => $roomId,
+                'server_id' => $serverId
+            ]);
+            
+            // Update the existing room with the server ID
+            $room = $this->storage->getRoom($roomId);
+            $gameData = json_decode($room['game_data'], true);
+            $gameData['server_id'] = $serverId;
+            $gameData['last_updated'] = time();
+            
+            $this->storage->updateRoom($roomId, [
+                'name' => $room['name'],
+                'status' => $room['status'],
+                'max_players' => $room['max_players'],
+                'current_players' => $room['current_players'],
+                'game_data' => json_encode($gameData),
+                'created_at' => $room['created_at']
+            ]);
+        }
+    }
+
+    /**
+     * Handle acknowledgment of room creation from game server
+     */
+    private function handleRoomCreatedAck(array $data): void
+    {
+        if (!isset($data['room_id']) || !isset($data['server_id'])) {
+            $this->logger->warning("Invalid room_created_ack data");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        $serverId = $data['server_id'];
+
+        $this->logger->info("Room creation acknowledged by game server", [
+            'room_id' => $roomId,
+            'server_id' => $serverId
+        ]);
+
+        // Check if we have pending joins for this room
+        if (isset($this->pendingRoomJoins[$roomId])) {
+            $pendingJoins = $this->pendingRoomJoins[$roomId];
+            unset($this->pendingRoomJoins[$roomId]);
+
+            $this->logger->info("Processing pending joins for room", [
+                'room_id' => $roomId, 
+                'count' => count($pendingJoins)
+            ]);
+
+            // Process all pending joins
+            foreach ($pendingJoins as $fd) {
+                $this->roomHandler->addPlayerToRoom($fd, $roomId, $serverId);
+            }
+        }
+    }
+
+    /**
+     * Handle acknowledgment of player added to room from game server
+     */
+    private function handlePlayerAddedToRoomAck(array $data): void
+    {
+        if (!isset($data['room_id']) || !isset($data['player_id'])) {
+            $this->logger->warning("Invalid player_added_to_room_ack data");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        $playerId = $data['player_id'];
+
+        $this->logger->info("Player added to room acknowledged by game server", [
+            'room_id' => $roomId,
+            'player_id' => $playerId
+        ]);
+
+        // At this point we could notify other clients about the new player
+        // or perform additional logic if needed
     }
 }

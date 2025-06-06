@@ -1,6 +1,19 @@
-
 <script setup lang="ts">
 import { Head, Link } from '@inertiajs/vue3';
+import WebSocketService from '@/Services/WebSocketService';
+import { onMounted } from 'vue';
+
+onMounted(() => {
+  if (!WebSocketService.isConnectedAndReady()) {
+    WebSocketService.connect();
+  }
+
+  
+});
+
+function runPerformanceDemo() {
+  WebSocketService.startPerformanceDemo(100, 4);
+}
 </script>
 
 <template>
@@ -53,6 +66,15 @@ import { Head, Link } from '@inertiajs/vue3';
               Dodaliśmy nową funkcję rozgrywki przez WebSocket, która umożliwia grę w czasie rzeczywistym z innymi graczami.
               Wypróbuj nową funkcję już teraz, tworząc lub dołączając do gry!
             </p>
+          </div>
+
+          <div class="mt-8 flex justify-center">
+            <button
+              @click="runPerformanceDemo"
+              class="inline-flex items-center px-6 py-3 bg-red-600 border border-transparent rounded-md font-semibold text-base text-white uppercase tracking-widest hover:bg-red-700 focus:bg-red-700 active:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition ease-in-out duration-150 shadow-lg"
+            >
+              Uruchom performance demo (100 pokoi x 4 boty)
+            </button>
           </div>
         </div>
       </div>

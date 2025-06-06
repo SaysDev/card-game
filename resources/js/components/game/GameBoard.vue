@@ -10,6 +10,7 @@ import { useAuth } from '@/composables/useAuth';
 import { useWebSocket } from '@/composables/useWebSocket';
 
 interface CardData {
+    suit: 'hearts' | 'diamonds' | 'clubs' | 'spades';
     value: string;
     header: string;
     cardRank: string;
@@ -64,7 +65,7 @@ const player3Cards = ref<CardData[]>([]);
 const player4Cards = ref<CardData[]>([]);
 const deckPile = ref<CardData[]>([]);
 
-const selectedMainPlayerCards = ref<string[]>([]);
+const selectedMainPlayerCards = ref<CardData[]>([]);
 const lastPlayedCardRankValue = ref<number | null>(null);
 const isConnecting = ref(false);
 const currentRoom = ref<string | null>(null);
@@ -77,7 +78,7 @@ const {
     authenticate,
     createRoom,
     joinRoom,
-    leaveRoom,
+    leaveRoom: wsLeaveRoom,
     listRooms,
     playCard,
     drawCard,
@@ -117,11 +118,12 @@ const generateFullDeck = (): CardData[] => {
         ranks.forEach(rank => {
             deck.push({
                 value: `${suit.key}_${rank.key}`,
+                suit: suit.key as 'hearts' | 'diamonds' | 'clubs' | 'spades',
+                rankValue: getRankValue(rank.key),
                 header: `${rank.name} ${suit.name}`,
-                cardRank: rank.key,
+                cardRank: rank.name,
                 cardSymbol: suit.symbol,
                 symbolColorClass: suit.colorClass,
-                rankValue: getRankValue(rank.key),
             });
         });
     });
@@ -199,35 +201,48 @@ const player3 = computed(() => playersData.value.find(p => p.id === 3));
 const player4 = computed(() => playersData.value.find(p => p.id === 4));
 
 
-const handlePlay = () => {
-    if (selectedMainPlayerCards.value.length === 0) {
-        toast({
-            title: 'Błąd',
-            description: 'Wybierz karty do zagrania',
-            variant: 'destructive',
-        });
-        return;
-    }
-
-    // Find the card index in the player's hand
-    const cardToPlay = selectedMainPlayerCards.value[0]; // Use first selected card for now
-    const cardIndex = mainPlayerCards.value.findIndex(card => card.value === cardToPlay);
-
-    if (cardIndex === -1) {
-        toast({
-            title: 'Błąd',
-            description: 'Nie znaleziono wybranej karty',
-            variant: 'destructive',
-        });
-        return;
-    }
-
-    // Emit event to parent component which will call WebSocketService
-    emit('play-card', cardIndex);
-
-    // Clear selection
-    selectedMainPlayerCards.value = [];
+const handleCardSelection = (selectedCards: CardData[]) => {
+  selectedMainPlayerCards.value = selectedCards;
 };
+
+const playSelectedCards = () => {
+  if (selectedMainPlayerCards.value.length === 0) {
+    toast({
+      title: 'No cards selected',
+      description: 'Please select at least one card to play',
+      variant: 'destructive'
+    });
+    return;
+  }
+
+  // Find the card index in the player's hand
+  const cardToPlay = selectedMainPlayerCards.value[0]; // Use first selected card for now
+  const cardIndex = mainPlayerCards.value.findIndex(card => card.value === cardToPlay.value);
+
+  if (cardIndex === -1) {
+    toast({
+      title: 'Invalid card',
+      description: 'The selected card is not in your hand',
+      variant: 'destructive'
+    });
+    return;
+  }
+
+  WebSocketService.playCard(cardIndex);
+  selectedMainPlayerCards.value = [];
+};
+
+function handleLeaveRoom() {
+  wsLeaveRoom();
+  gameState.roomId = null;
+  gameState.roomName = null;
+  gameState.players = [];
+  gameState.status = 'waiting';
+  gameState.hand = [];
+  gameState.isYourTurn = false;
+  gameState.playerReady = false;
+  window.location.href = '/lobby';
+}
 
 onMounted(() => {
     // Update player names from props
@@ -325,6 +340,13 @@ onMounted(() => {
         }
     }
 });
+
+const getPlayerCards = (player: Player) => {
+  return player.cards.map(card => ({
+    ...card,
+    isMainPlayer: player.isMainPlayer
+  }));
+};
 </script>
 
 <template>
@@ -356,7 +378,7 @@ onMounted(() => {
             <!-- Game Action Buttons -->
             <div class="absolute bottom-[10rem] left-1/2 transform -translate-x-1/2 flex gap-4">
                 <button
-                    @click="handlePlay"
+                    @click="playSelectedCards"
                     :disabled="selectedMainPlayerCards.length === 0"
                     :class="[
                 'play-button',
@@ -413,12 +435,11 @@ onMounted(() => {
         </div>
 
         <div class="main-player-hand-area absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center">
-            <card-picker
-                :options="mainPlayerCards"
-                title=""
+            <CardSelection
+                :cards="mainPlayerCards"
                 :multiple="true"
                 :initial-selected="[]"
-                @update:selected="selectedMainPlayerCards = $event"
+                @update:selected="handleCardSelection"
                 :last-played-rank-value="lastPlayedCardRankValue"
             />
         </div>
@@ -467,7 +488,7 @@ onMounted(() => {
 
             <div v-else class="flex flex-col gap-2">
                 <button
-                    @click="WebSocketService.leaveRoom()"
+                    @click="handleLeaveRoom"
                     class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded"
                 >
                     Opuść pokój

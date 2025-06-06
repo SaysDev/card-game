@@ -17,8 +17,16 @@ class DatabaseSeeder extends Seeder
 
         User::factory()->create([
             'name' => 'Test User',
-            'email' => 'says@ivz.pl',
+            'email' => 'test1@ivz.pl',
             'password' => bcrypt('#Marcin123'),
+            'ws_token' => \Str::random(64),
+        ]);
+
+        User::create([
+            'name' => 'Test 2',
+            'email' => 'test2@ivz.pl',
+            'password' => bcrypt('#Marcin123'),
+            'ws_token' => \Str::random(64),
         ]);
     }
 }

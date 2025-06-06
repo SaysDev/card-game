@@ -5,14 +5,103 @@ namespace App\Servers\Handlers;
 use App\Servers\Storage\MemoryStorage;
 use App\Servers\Utilities\GameUtilities;
 use OpenSwoole\WebSocket\Server;
+use App\Servers\WebSocketServer;
+use App\Servers\Utilities\Logger;
 
-class GameHandler
+class GameHandler extends BaseMessageHandler
 {
-    private MemoryStorage $storage;
+    private ?WebSocketServer $wsServer = null;
 
-    public function __construct(MemoryStorage $storage)
+    public function __construct(Server $server, MemoryStorage $storage, Logger $logger)
     {
-        $this->storage = $storage;
+        parent::__construct($server, $storage, $logger);
+    }
+
+    public function handlePlayerReady(int $fd, array $data): void
+    {
+        if (!isset($data['room_id'])) {
+            $this->sendError($fd, "Missing room_id");
+            return;
+        }
+
+        $roomId = $data['room_id'];
+        $player = $this->validatePlayer($fd);
+        if (!$player) {
+            return;
+        }
+
+        $room = $this->validateRoom($roomId);
+        if (!$room) {
+            $this->sendError($fd, "Room not found");
+            return;
+        }
+
+        $this->logger->info("Player ready", [
+            'room_id' => $roomId,
+            'user_id' => $player['user_id'],
+            'username' => $player['username']
+        ]);
+
+        $gameData = json_decode($room['game_data'], true);
+        foreach ($gameData['players'] as &$p) {
+            if ($p['fd'] === $fd) {
+                $p['ready'] = true;
+                break;
+            }
+        }
+
+        $room['game_data'] = json_encode($gameData);
+        $this->storage->setRoom($roomId, $room);
+
+        // Check if all players are ready
+        $this->checkAllPlayersReady($roomId);
+    }
+
+    private function checkAllPlayersReady(string $roomId): void
+    {
+        $room = $this->validateRoom($roomId);
+        if (!$room) {
+            return;
+        }
+
+        $gameData = json_decode($room['game_data'], true);
+        $allReady = true;
+        $playerCount = count($gameData['players']);
+
+        foreach ($gameData['players'] as $player) {
+            if (!$player['ready']) {
+                $allReady = false;
+                break;
+            }
+        }
+
+        if ($allReady && $playerCount >= 2) {
+            $this->startGame($roomId);
+        }
+    }
+
+    private function startGame(string $roomId): void
+    {
+        $room = $this->validateRoom($roomId);
+        if (!$room) {
+            return;
+        }
+
+        $this->logger->info("Starting game", ['room_id' => $roomId]);
+
+        $room['status'] = 'playing';
+        $gameData = json_decode($room['game_data'], true);
+        $gameData['game_started'] = true;
+        $gameData['current_turn'] = 0;
+        $room['game_data'] = json_encode($gameData);
+
+        $this->storage->setRoom($roomId, $room);
+
+        $this->broadcastToRoom($roomId, [
+            'type' => 'game_started',
+            'room_id' => $roomId,
+            'room' => $room
+        ]);
     }
 
     public function handleGameAction(Server $server, int $fd, array $data): void
@@ -46,9 +135,17 @@ class GameHandler
             return;
         }
 
+        // Wyślij akcję do GameServera
+        if ($this->wsServer && method_exists($this->wsServer, 'sendToGameServer')) {
+            $this->wsServer->sendToGameServer([
+                'action' => 'player_action',
+                'room_id' => $roomId,
+                'move' => $data
+            ]);
+        }
+
         $gameData = json_decode($room['game_data'], true);
 
-        // Check if it's this player's turn
         $currentPlayerFd = $gameData['players'][$gameData['current_turn']] ?? null;
 
         if ($currentPlayerFd != $fd) {
@@ -59,7 +156,6 @@ class GameHandler
             return;
         }
 
-        // Process the game action
         if (!isset($data['action_type'])) {
             $server->push($fd, json_encode([
                 'type' => 'error',
@@ -68,7 +164,6 @@ class GameHandler
             return;
         }
 
-        // Process different game actions based on the card game rules
         switch ($data['action_type']) {
             case 'play_card':
                 $this->handlePlayCard($server, $fd, $roomId, $gameData, $data);
@@ -90,73 +185,6 @@ class GameHandler
         }
     }
 
-    public function startGame(Server $server, string $roomId): void
-    {
-        if (!$this->storage->roomExists($roomId)) {
-            return;
-        }
-
-        $room = $this->storage->getRoom($roomId);
-        $gameData = json_decode($room['game_data'], true);
-
-        // Ensure we have at least 2 players
-        if (count($gameData['players']) < 2) {
-            return;
-        }
-
-        // Shuffle the deck
-        shuffle($gameData['deck']);
-
-        // Deal cards to players (e.g., 7 cards each for a standard card game)
-        foreach ($gameData['players'] as $playerFd) {
-            if (!$this->storage->playerExists($playerFd)) {
-                continue;
-            }
-
-            $playerCards = [];
-            for ($i = 0; $i < 7; $i++) {
-                if (empty($gameData['deck'])) {
-                    break;
-                }
-                $playerCards[] = array_pop($gameData['deck']);
-            }
-
-            $player = $this->storage->getPlayer($playerFd);
-            $this->storage->setPlayer($playerFd, [
-                'user_id' => $player['user_id'],
-                'username' => $player['username'],
-                'room_id' => $roomId,
-                'status' => 'playing',
-                'cards' => json_encode($playerCards),
-                'score' => $player['score'],
-                'last_activity' => time()
-            ]);
-        }
-
-        // Set initial game state
-        $gameData['status'] = 'playing';
-        $gameData['current_turn'] = 0; // Start with first player
-        $gameData['game_started'] = true;
-        $gameData['play_area'] = [];
-        $gameData['last_card'] = null;
-        $gameData['deck_count'] = count($gameData['deck']);
-        $gameData['last_updated'] = time();
-        $gameData['start_time'] = time();
-
-        // Update room status
-        $this->storage->updateRoom($roomId, [
-            'name' => $room['name'],
-            'status' => 'playing',
-            'max_players' => $room['max_players'],
-            'current_players' => $room['current_players'],
-            'game_data' => json_encode($gameData),
-            'created_at' => $room['created_at']
-        ]);
-
-        // Notify all players that the game has started
-        $this->notifyGameStarted($server, $roomId, $gameData);
-    }
-
     public function startNewGameInRoom(Server $server, string $roomId): void
     {
         if (!$this->storage->roomExists($roomId)) {
@@ -165,7 +193,6 @@ class GameHandler
 
         $room = $this->storage->getRoom($roomId);
 
-        // Reset the game room to waiting state
         $gameData = json_decode($room['game_data'], true);
         $gameData['deck'] = GameUtilities::createNewDeck();
         $gameData['current_turn'] = -1;
@@ -183,7 +210,6 @@ class GameHandler
             'created_at' => $room['created_at']
         ]);
 
-        // Reset player cards
         foreach ($gameData['players'] as $playerFd) {
             if ($this->storage->playerExists($playerFd)) {
                 $player = $this->storage->getPlayer($playerFd);
@@ -199,7 +225,6 @@ class GameHandler
             }
         }
 
-        // Notify players that a new game is ready
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
             'type' => 'new_game_ready',
@@ -207,9 +232,8 @@ class GameHandler
             'room_id' => $roomId
         ]);
 
-        // Start the game if we have enough players
         if (count($gameData['players']) >= 2) {
-            $this->startGame($server, $roomId);
+            $this->startGame($roomId);
         }
     }
 
@@ -249,14 +273,10 @@ class GameHandler
             }
         }
 
-        // Remove the played card from player's hand
         array_splice($playerCards, $cardIndex, 1);
 
-        // Add card to the play area in game state
         $gameData['play_area'][] = $card;
         $gameData['last_card'] = $card;
-
-        // Update player's cards
         $this->storage->setPlayer($fd, [
             'user_id' => $player['user_id'],
             'username' => $player['username'],
@@ -267,10 +287,7 @@ class GameHandler
             'last_activity' => time()
         ]);
 
-        // Update game data
         $this->updateGameData($roomId, $gameData);
-
-        // Notify all players about the move
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
             'type' => 'card_played',
@@ -280,18 +297,15 @@ class GameHandler
             'remaining_cards' => count($playerCards)
         ]);
 
-        // Check if player has won (no cards left)
         if (empty($playerCards)) {
             $this->handlePlayerWin($server, $fd, $roomId);
         } else {
-            // Move to next player
             $this->nextTurn($server, $roomId, $gameData);
         }
     }
 
     private function handleDrawCard(Server $server, int $fd, string $roomId, array $gameData): void
     {
-        // Check if deck has cards
         if (empty($gameData['deck'])) {
             $server->push($fd, json_encode([
                 'type' => 'error',
@@ -299,8 +313,6 @@ class GameHandler
             ]));
             return;
         }
-
-        // Draw a card from the deck
         $card = array_pop($gameData['deck']);
         $gameData['deck_count'] = count($gameData['deck']);
 
@@ -309,7 +321,6 @@ class GameHandler
         $playerCards = json_decode($player['cards'], true);
         $playerCards[] = $card;
 
-        // Update player's cards
         $this->storage->setPlayer($fd, [
             'user_id' => $player['user_id'],
             'username' => $player['username'],
@@ -320,17 +331,13 @@ class GameHandler
             'last_activity' => time()
         ]);
 
-        // Update game data
         $this->updateGameData($roomId, $gameData);
-
-        // Notify player about their new card
         $server->push($fd, json_encode([
             'type' => 'card_drawn',
             'card' => $card,
             'hand' => $playerCards
         ]));
 
-        // Notify other players that this player drew a card
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoomExcept($server, $roomId, $fd, [
             'type' => 'player_drew_card',
@@ -340,16 +347,12 @@ class GameHandler
             'deck_remaining' => count($gameData['deck'])
         ]);
 
-        // Move to next player after drawing
         $this->nextTurn($server, $roomId, $gameData);
     }
 
     private function handlePassTurn(Server $server, int $fd, string $roomId, array $gameData): void
     {
-        // Simply move to the next player
         $this->nextTurn($server, $roomId, $gameData);
-
-        // Notify all players about the pass
         $player = $this->storage->getPlayer($fd);
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
@@ -365,14 +368,9 @@ class GameHandler
             return;
         }
 
-        // Move to next player
         $gameData['current_turn'] = ($gameData['current_turn'] + 1) % count($gameData['players']);
         $gameData['last_updated'] = time();
-
-        // Update game data
         $this->updateGameData($roomId, $gameData);
-
-        // Notify all players about the turn change
         $currentPlayerFd = $gameData['players'][$gameData['current_turn']] ?? null;
         if ($currentPlayerFd && $this->storage->playerExists($currentPlayerFd)) {
             $player = $this->storage->getPlayer($currentPlayerFd);
@@ -413,7 +411,6 @@ class GameHandler
         $room = $this->storage->getRoom($roomId);
         $gameData = json_decode($room['game_data'], true);
 
-        // Update game status
         $gameData['status'] = 'ended';
         $gameData['winner'] = [
             'user_id' => $player['user_id'],
@@ -421,7 +418,6 @@ class GameHandler
         ];
         $gameData['end_time'] = time();
 
-        // Update room status
         $this->storage->updateRoom($roomId, [
             'name' => $room['name'],
             'status' => 'ended',
@@ -431,7 +427,6 @@ class GameHandler
             'created_at' => $room['created_at']
         ]);
 
-        // Increment player score
         $this->storage->setPlayer($fd, [
             'user_id' => $player['user_id'],
             'username' => $player['username'],
@@ -442,7 +437,6 @@ class GameHandler
             'last_activity' => time()
         ]);
 
-        // Notify all players about the win
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
             'type' => 'game_over',
@@ -463,7 +457,6 @@ class GameHandler
 
     public function handlePlayerLeavingGame(Server $server, string $roomId, int $fd, array $gameData): void
     {
-        // If this was the current player's turn, move to next player
         $currentTurnIndex = $gameData['current_turn'];
         $currentTurnFd = $gameData['players'][$currentTurnIndex] ?? null;
 
@@ -471,7 +464,6 @@ class GameHandler
             $this->nextTurn($server, $roomId, $gameData);
         }
 
-        // If only one player remains, end the game
         if (count($gameData['players']) <= 1) {
             $this->endGameDueToPlayers($server, $roomId);
         }
@@ -486,11 +478,9 @@ class GameHandler
         $room = $this->storage->getRoom($roomId);
         $gameData = json_decode($room['game_data'], true);
 
-        // Update game status
         $gameData['status'] = 'ended';
         $gameData['end_time'] = time();
 
-        // Update room status
         $this->storage->updateRoom($roomId, [
             'name' => $room['name'],
             'status' => 'waiting', // Set back to waiting for new players
@@ -500,7 +490,6 @@ class GameHandler
             'created_at' => $room['created_at']
         ]);
 
-        // Notify remaining players
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
             'type' => 'game_ended',
@@ -526,7 +515,6 @@ class GameHandler
         if ($room['status'] === 'playing' &&
             isset($gameData['turn_start_time']) &&
             ($currentTime - $gameData['turn_start_time']) > $turnTimeout) {
-            // Auto-pass turn for inactive player
             $this->nextTurn($server, $roomId, $gameData);
         }
     }
@@ -535,7 +523,6 @@ class GameHandler
     {
         $players = [];
 
-        // Collect player information
         foreach ($gameData['players'] as $index => $playerFd) {
             if ($this->storage->playerExists($playerFd)) {
                 $playerData = $this->storage->getPlayer($playerFd);
@@ -547,7 +534,6 @@ class GameHandler
                 ];
                 $players[] = $playerInfo;
 
-                // Send each player their cards
                 $server->push($playerFd, json_encode([
                     'type' => 'your_cards',
                     'cards' => json_decode($playerData['cards'], true)
@@ -555,7 +541,6 @@ class GameHandler
             }
         }
 
-        // Broadcast game started to all players
         $roomHandler = new RoomHandler($this->storage);
         $roomHandler->broadcastToRoom($server, $roomId, [
             'type' => 'game_started',

@@ -4,79 +4,136 @@ namespace App\Servers\Handlers;
 
 use App\Servers\Storage\MemoryStorage;
 use OpenSwoole\WebSocket\Server;
+use App\Servers\Utilities\Logger;
 
 class AuthenticationHandler
 {
     private MemoryStorage $storage;
+    private Logger $logger;
 
     public function __construct(MemoryStorage $storage)
     {
         $this->storage = $storage;
+        $this->logger = new Logger('AuthHandler');
     }
 
     public function handleAuthentication(Server $server, int $fd, array $data): void
     {
-        // Log the incoming authentication data for debugging
-        error_log('Authentication data received: ' . json_encode($data));
-        echo "[websocket] Authentication data received: " . json_encode($data) . "\n";
+        try {
+            $token = $data['token'] ?? null;
+            $authType = $data['auth_type'] ?? null;
+            
+            if (!$token) {
+                $this->logger->warning('Missing authentication token', ['data' => $data]);
+                $server->push($fd, json_encode([
+                    'type' => 'auth_error',
+                    'message' => 'Missing authentication token'
+                ]));
+                return;
+            }
 
-        if (!isset($data['user_id'], $data['username'], $data['token'])) {
+            // Handle server authentication
+            if ($authType === 'server') {
+                $serverId = $data['server_id'] ?? null;
+                $capacity = $data['capacity'] ?? null;
+                
+                if (!$serverId || !$capacity) {
+                    $this->logger->warning('Missing server data for authentication', [
+                        'fd' => $fd,
+                        'server_id' => $serverId,
+                        'capacity' => $capacity
+                    ]);
+                    $server->push($fd, json_encode([
+                        'type' => 'auth_error',
+                        'message' => 'Missing server data'
+                    ]));
+                    return;
+                }
+
+                // Validate server token
+                $auth = new \App\Services\WebSocketAuthService();
+                if ($auth->validateServerToken($token)) {
+                    $this->logger->info('Server authenticated', [
+                        'fd' => $fd,
+                        'server_id' => $serverId
+                    ]);
+                    
+                    // Set player data for server
+                    $this->storage->setPlayer($fd, [
+                        'type' => 'server',
+                        'server_id' => $serverId,
+                        'capacity' => $capacity,
+                        'authenticated' => true,
+                        'last_activity' => time()
+                    ]);
+                    
+                    $server->push($fd, json_encode([
+                        'type' => 'auth_success',
+                        'message' => 'Server authenticated successfully',
+                        'server_id' => $serverId
+                    ]));
+                    return;
+                } else {
+                    $this->logger->warning('Invalid server token', [
+                        'fd' => $fd,
+                        'server_id' => $serverId,
+                        'token_length' => strlen($token)
+                    ]);
+                    $server->push($fd, json_encode([
+                        'type' => 'auth_error',
+                        'message' => 'Invalid server token'
+                    ]));
+                    return;
+                }
+            }
+
+            // Handle user authentication
+            if (!isset($data['user_id']) || !isset($data['username'])) {
+                $this->logger->warning('Authentication data received without required fields', ['data' => $data]);
+                $server->push($fd, json_encode([
+                    'type' => 'auth_error',
+                    'message' => 'Missing authentication data'
+                ]));
+                return;
+            }
+            
+            $this->logger->info('Authentication data received', ['user_id' => $data['user_id'], 'username' => $data['username']]);
+            
+            $userId = $data['user_id'];
+            $username = $data['username'];
+            
+            // Set player data
+            $this->storage->setPlayer($fd, [
+                'user_id' => $userId,
+                'username' => $username,
+                'room_id' => '',
+                'status' => 'online',
+                'cards' => '[]',
+                'score' => 0,
+                'last_activity' => time(),
+                'authenticated' => true
+            ]);
+            
+            $server->push($fd, json_encode([
+                'type' => 'auth_success',
+                'user' => [
+                    'id' => $userId,
+                    'username' => $username
+                ],
+                'connected_users' => $this->storage->getOnlineCount()
+            ]));
+            
+            // Check if user was in a room before and try to reconnect
+            $this->reconnectToActiveRoom($server, $fd, $userId);
+        } catch (\Exception $e) {
+            $this->logger->error('Authentication error', ['message' => $e->getMessage()]);
             $server->push($fd, json_encode([
                 'type' => 'auth_error',
-                'message' => 'Missing authentication data'
+                'message' => 'Authentication error: ' . $e->getMessage()
             ]));
-            return;
         }
-
-        // In production, validate token here with Laravel Auth
-        // For demo, we'll assume the token is valid
-
-        // Always convert user_id to integer for storage since the Table column is TYPE_INT
-        $userId = (int)$data['user_id'];
-
-        // Log the converted user ID
-        echo "Received auth request with user_id: {$userId} (converted to int)\n";
-        $username = $data['username'];
-
-        // Update connection with user info - ensure user_id is an integer
-        $this->storage->setConnection($fd, [
-            'fd' => $fd,
-            'user_id' => $userId, // Now $userId is already cast to int
-            'connected_at' => time()
-        ]);
-
-        // Check if user was in an active game room
-        $this->reconnectToActiveRoom($server, $fd, $userId);
-
-        // Create player record - $userId is now properly cast to int
-        $this->storage->setPlayer($fd, [
-            'user_id' => $userId, // Already cast to int above
-            'username' => $username,
-            'room_id' => '',
-            'status' => 'online',
-            'cards' => '[]',
-            'score' => 0,
-            'last_activity' => time()
-        ]);
-
-        // Echo the user ID for debugging
-        echo "Sending auth_success with user_id: {$userId}\n";
-        echo "[websocket] Sending auth_success with user_id: {$userId}\n";
-
-        // Prepare auth response
-        $authResponse = [
-            'type' => 'auth_success',
-            'user_id' => $userId, // Will be converted to string in JSON
-            'username' => $username
-        ];
-
-        // Send a response with user_id - can be sent as string in JSON
-        $server->push($fd, json_encode($authResponse));
-
-        // Log that authentication was successful
-        echo "[websocket] Authentication successful for user {$username} (ID: {$userId})\n";
     }
-
+    
     /**
      * Attempt to reconnect a user to their active game room
      *
@@ -99,19 +156,17 @@ class AuthenticationHandler
 
                 $gameData = json_decode($room['game_data'], true);
 
-                // Check if this room's game data contains this user
                 if (isset($gameData['player_user_ids']) && in_array($userId, $gameData['player_user_ids'])) {
-                    // User was in this room, reconnect them
-                    echo "Reconnecting user {$userId} to room {$roomId}\n";
+                    $this->logger->info("Reconnecting user to room", [
+                        'user_id' => $userId,
+                        'room_id' => $roomId
+                    ]);
 
-                    // Update game data to include this connection
                     $gameData['players'][] = $fd;
                     $room['game_data'] = json_encode($gameData);
 
-                    // Update room in storage
                     $this->storage->updateRoom($roomId, $room);
 
-                    // Update player record
                     $player = $this->storage->getPlayer($fd);
                     $this->storage->setPlayer($fd, [
                         'user_id' => $player['user_id'],
@@ -123,7 +178,6 @@ class AuthenticationHandler
                         'last_activity' => time()
                     ]);
 
-                    // Notify the player they've been reconnected
                     $server->push($fd, json_encode([
                         'type' => 'room_reconnected',
                         'room_id' => $roomId,
@@ -131,7 +185,6 @@ class AuthenticationHandler
                         'game_status' => $room['status']
                     ]));
 
-                    // If the game is in progress, send them their cards
                     if ($room['status'] === 'playing' && isset($gameData['player_cards'][$userId])) {
                         $server->push($fd, json_encode([
                             'type' => 'your_cards',
@@ -143,7 +196,9 @@ class AuthenticationHandler
                 }
             }
         } catch (\Exception $e) {
-            echo "Error reconnecting to room: " . $e->getMessage() . "\n";
+            $this->logger->error("Error reconnecting to room", [
+                'error' => $e->getMessage()
+            ]);
         }
     }
 }

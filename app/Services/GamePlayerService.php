@@ -28,7 +28,6 @@ class GamePlayerService
                 return $gameData;
             }
 
-            // Initialize arrays if they don't exist
             if (!isset($gameData['player_user_ids'])) {
                 $gameData['player_user_ids'] = [];
             }
@@ -38,7 +37,6 @@ class GamePlayerService
                 $gameData['player_user_ids'][$key] = (int)$id;
             }
 
-            // Get user IDs from database
             $dbUserIds = $dbRoom->users->pluck('id')->map(function ($id) {
                 return (int)$id;
             })->toArray();
@@ -46,7 +44,6 @@ class GamePlayerService
             echo "[GamePlayerService] Database has user IDs: " . implode(", ", $dbUserIds) . "\n";
             echo "[GamePlayerService] Memory has user IDs: " . implode(", ", $gameData['player_user_ids']) . "\n";
 
-            // Add database users to memory if not already there
             $syncedPlayerIds = $gameData['player_user_ids'];
             foreach ($dbUserIds as $dbUserId) {
                 if (!in_array($dbUserId, $syncedPlayerIds, true)) {
@@ -55,7 +52,6 @@ class GamePlayerService
                 }
             }
 
-            // Add memory users to database if not already there
             foreach ($gameData['player_user_ids'] as $memUserId) {
                 if (!in_array($memUserId, $dbUserIds, true)) {
                     echo "[GamePlayerService] Adding user ID {$memUserId} from memory to database\n";
@@ -78,10 +74,8 @@ class GamePlayerService
                 }
             }
 
-            // Update game data with the merged player IDs
             $gameData['player_user_ids'] = array_values(array_unique($syncedPlayerIds, SORT_NUMERIC));
 
-            // Update current_players in the database
             $dbRoom->update([
                 'current_players' => count($gameData['player_user_ids'])
             ]);
@@ -109,16 +103,13 @@ class GamePlayerService
     public static function getPlayersList(string $roomId, array $gameData): array
     {
         try {
-            // First sync players to ensure database and memory are in agreement
             $gameData = self::syncPlayers($roomId, $gameData);
 
             $playersList = [];
             $addedUserIds = [];
 
-            // Get complete room data with users from database
             $dbRoom = GameRoom::with('users')->find($roomId);
             if ($dbRoom) {
-                // First add all database users
                 foreach ($dbRoom->users as $dbUser) {
                     $userId = (int)$dbUser->id;
                     if (!in_array($userId, $addedUserIds)) {
@@ -137,7 +128,6 @@ class GamePlayerService
                 }
             }
 
-            // Now add any players from game_data that aren't in the database yet
             if (isset($gameData['player_user_ids'])) {
                 foreach ($gameData['player_user_ids'] as $userId) {
                     $userId = (int)$userId;

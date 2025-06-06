@@ -28,4 +28,9 @@ export default defineConfig({
             'ziggy-js': resolve(__dirname, 'vendor/tightenco/ziggy'),
         },
     },
+    server: {
+        watch: {
+            ignored: ['**/*.log', 'node_modules/**', '.git/**']
+        }
+    },
 });

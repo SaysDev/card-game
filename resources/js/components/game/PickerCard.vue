@@ -9,7 +9,7 @@ interface PickerCardProps {
     cardSymbol?: string;
     symbolColorClass?: string;
     isFaceDown?: boolean;
-    rankValue?: number; // DODANE: wartośc numeryczna rangi
+    rankValue?: number;
 }
 
 const props = defineProps<PickerCardProps>();
@@ -20,7 +20,7 @@ const emit = defineEmits<{
 const isHovered = ref(false);
 
 const toggleSelection = () => {
-    if (!props.isFaceDown) { // Możesz kliknąć tylko na karty, które nie są rewersem
+    if (!props.isFaceDown) {
         emit('selected', props.value);
     }
 };
@@ -55,17 +55,16 @@ const handleMouseLeave = () => {
       'text-center',
       'relative',
       'transform-gpu',
-      'w-32', // Ustalona szerokość karty
-      'h-48', // Ustalona wysokość karty
-      { '-mr-20': !props.isFaceDown }, // Ujemny margines, aby karty zachodziły (tylko awers)
-      { 'hover:z-50': !props.isFaceDown }, // Wysoki z-index na najechanie (tylko awers)
-      { 'hover:scale-105': !props.isFaceDown }, // Lekkie powiększenie (tylko awers)
-      { 'hover:!relative': !props.isFaceDown }, // Usunięcie względnego pozycjonowania (tylko awers)
+      'w-32',
+      'h-48',
+      { '-mr-20': !props.isFaceDown },
+      { 'hover:z-50': !props.isFaceDown },
+      { 'hover:scale-105': !props.isFaceDown },
+      { 'hover:!relative': !props.isFaceDown },
       isSelected && !props.isFaceDown ? 'border-blue-500 ring-4 ring-blue-200 bg-blue-50' : 'border-gray-200',
-      // Klasy dla rewersu
-      { 'bg-gradient-to-br from-red-800 to-red-900': props.isFaceDown }, // Ciemniejszy gradient
+      { 'bg-gradient-to-br from-red-800 to-red-900': props.isFaceDown },
       { 'shadow-inner': props.isFaceDown },
-      { 'hover:scale-100': props.isFaceDown }, // Wyłącz skalowanie na hover dla rewersu
+      { 'hover:scale-100': props.isFaceDown },
     ]"
         :style="{
       'z-index': isHovered && !props.isFaceDown ? 100 : (props.cardIndex !== undefined ? props.cardIndex : 1),
@@ -100,14 +99,13 @@ const handleMouseLeave = () => {
 </template>
 
 <style scoped>
-/* Dodajemy wzorek dla rewersu karty */
 .bg-pattern {
     background-image:
         linear-gradient(45deg, rgba(255,255,255,0.1) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.1) 75%, rgba(255,255,255,0.1) 100%),
         linear-gradient(45deg, rgba(255,255,255,0.1) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.1) 75%, rgba(255,255,255,0.1) 100%);
-    background-size: 20px 20px; /* Rozmiar pojedynczego elementu wzoru */
-    background-position: 0 0, 10px 10px; /* Przesunięcie drugiego gradientu dla siatki */
-    opacity: 0.15; /* Lekka przezroczystość wzoru */
+    background-size: 20px 20px;
+    background-position: 0 0, 10px 10px;
+    opacity: 0.15;
     z-index: 0;
 }
 </style>

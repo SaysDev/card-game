@@ -1,3 +1,4 @@
+import { usePage } from '@inertiajs/vue3';
 import { reactive } from 'vue';
 
 interface GameState {
@@ -12,7 +13,7 @@ interface GameState {
     playArea: Card[];
     lastCard: Card | null;
     deckCount: number;
-    status: 'waiting' | 'playing' | 'ended';
+    status: 'waiting' | 'playing' | 'ended' | 'creating';
     winner: Player | null;
     isYourTurn: boolean;
     // Track if the user is authenticated
@@ -27,6 +28,8 @@ interface Player {
     cards_count?: number;
     score?: number;
     is_current?: boolean;
+    status?: string; // 'ready' | 'waiting' | 'playing' | 'disconnected'
+    ready?: boolean;
 }
 
 interface Card {
@@ -35,7 +38,7 @@ interface Card {
 }
 
 interface GameAction {
-    action: string;
+    type: string;
     [key: string]: any;
 }
 
@@ -63,12 +66,14 @@ export class WebSocketService {
     private ws: WebSocket | null = null;
     private reconnectAttempts: number = 0;
     private maxReconnectAttempts: number = 5;
-    private reconnectTimeout: number = 1000; // Start with 1s, will increase
+    private reconnectTimeout: number = 1000;
     private eventListeners: Map<string, Function[]> = new Map();
     private url: string;
     private userId: string | number | null = null;
     private username: string | null = null;
     private authToken: string | null = null;
+    private heartbeatInterval: number | null = null;
+    private isAuthenticating: boolean = false;
 
     constructor(url: string = '') {
         this.url = url || `ws://${window.location.hostname}:9502`;
@@ -83,77 +88,53 @@ export class WebSocketService {
     /**
      * Connect to the WebSocket server
      */
-            public connect(userId: number | string, username: string, token: string): void {
-        // Try to use a more reliable user ID source if available
-        try {
-            // @ts-ignore - Inertia might not be available in all contexts
-            if (window.Inertia && window.Inertia.page && window.Inertia.page.props.auth && window.Inertia.page.props.auth.user) {
-                // @ts-ignore
-                const inertiaUserId = window.Inertia.page.props.auth.user.id;
-                if (inertiaUserId) {
-                    console.log('Using user ID from Inertia page props in connect method:', inertiaUserId);
-                    userId = inertiaUserId;
-                    // @ts-ignore
-                    username = window.Inertia.page.props.auth.user.name || username;
-                }
-            }
-        } catch (error) {
-            console.warn('Could not access Inertia page props in connect method:', error);
-        }
-
-        // Validate userId to ensure it's not 0, undefined, null, or an empty string
+    public connect(userId: number | string | null = null, username: string | null = null, token: string | null = null): void {
+        const page = usePage();
+        // Jeśli argumenty nie są przekazane, pobierz z usePage
+        if (!userId) userId = (page.props as any)?.auth?.user?.id;
+        if (!username) username = (page.props as any)?.auth?.user?.name;
+        if (!token) token = (page.props as any)?.auth?.user?.ws_token;
         if (!userId || userId === 0 || userId === '0') {
-            console.error('Invalid user ID provided:', userId);
+            console.error('[WebSocket] Invalid user ID provided:', userId);
             this.emit('auth_error', { message: 'Invalid user ID provided' });
             return;
         }
-
-        // Use the explicitly provided userId - don't try to override it
-        // This ensures we use the ID passed from the calling component
         this.userId = userId;
         this.username = username || `User_${userId}`;
         this.authToken = token;
-
-        // Log the user ID we're using
-        console.log('Connecting to WebSocket with user ID:', this.userId, 'Type:', typeof this.userId);
-
+        console.log('[WebSocket] Connecting to WebSocket with user ID:', this.userId, 'Type:', typeof this.userId);
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            console.log('WebSocket is already connected - re-authenticating with new credentials');
+            console.log('[WebSocket] WebSocket is already connected - re-authenticating with new credentials');
             this.authenticate();
             return;
         }
-
         try {
             this.ws = new WebSocket(this.url);
-
             this.ws.onopen = () => {
-                console.log('WebSocket connection established');
+                console.log('[WebSocket] Connection established');
                 gameState.connected = true;
                 this.reconnectAttempts = 0;
                 this.reconnectTimeout = 1000;
                 this.emit('connected');
-
-                // Authenticate after connection
                 this.authenticate();
+                this.startHeartbeat();
             };
-
             this.ws.onmessage = (event) => {
                 this.handleMessage(event.data);
             };
-
             this.ws.onclose = () => {
-                console.log('WebSocket connection closed');
+                console.log('[WebSocket] Connection closed');
                 gameState.connected = false;
+                this.stopHeartbeat();
                 this.emit('disconnected');
                 this.attemptReconnect();
             };
-
             this.ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+                console.error('[WebSocket] Error:', error);
                 this.emit('error', error);
             };
         } catch (error) {
-            console.error('Failed to create WebSocket connection:', error);
+            console.error('[WebSocket] Failed to create connection:', error);
             this.emit('error', error);
         }
     }
@@ -163,47 +144,56 @@ export class WebSocketService {
      * Changed to public to allow manual authentication after connection
      */
     public authenticate(): void {
-        try {
-            // Try to get user ID from Inertia directly (more reliable method)
-            const usePage = () => {
-                // @ts-ignore - Inertia might not be available in all contexts
-                if (window.Inertia && window.Inertia.page) {
-                    // @ts-ignore
-                    return window.Inertia.page;
-                }
-                return { props: { auth: { user: null } } };
-            };
-
-            const page = usePage();
-            if (page.props.auth && page.props.auth.user && page.props.auth.user.id) {
-                this.userId = page.props.auth.user.id;
-                this.username = page.props.auth.user.name || `User_${this.userId}`;
-                console.log('Using user ID from Inertia page props:', this.userId);
-            }
-        } catch (error) {
-            console.warn('Could not access Inertia page props:', error);
+        if (this.isAuthenticating) {
+            console.log('[WebSocket] Already authenticating, skipping...');
+            return;
         }
+
+        this.isAuthenticating = true;
+        const page = usePage();
+        console.log('[WebSocket] Page props:', page.props);
+        
+        // Get fresh auth data from page props
+        const authData = (page.props as any)?.auth?.user;
+        if (!authData) {
+            console.error('[WebSocket] No auth data available in page props');
+            this.emit('auth_error', { message: 'No auth data available' });
+            this.isAuthenticating = false;
+            return;
+        }
+
+        this.userId = authData.id;
+        this.username = authData.name;
+        this.authToken = authData.ws_token;
+
+        console.log('[WebSocket] Authenticating with data:', {
+            userId: this.userId,
+            username: this.username,
+            hasToken: !!this.authToken
+        });
 
         if (!this.userId || !this.username || !this.authToken) {
-            console.error('Missing authentication information');
+            console.error('[WebSocket] Missing authentication information:', {
+                userId: this.userId,
+                username: this.username,
+                hasToken: !!this.authToken
+            });
             this.emit('auth_error', { message: 'Missing authentication information' });
+            this.isAuthenticating = false;
             return;
         }
 
-        // Don't provide a default user ID - it must be explicitly provided
-        // This prevents unexpected authentication with wrong user IDs
-        if (!this.userId) {
-            console.error('No valid user ID for authentication');
-            this.emit('auth_error', { message: 'No valid user ID for authentication' });
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            console.error('[WebSocket] Not connected, cannot authenticate');
+            this.emit('auth_error', { message: 'WebSocket not connected' });
+            this.isAuthenticating = false;
             return;
         }
 
-        // Use the directly provided user ID and username
-        // This is more reliable than trying to access global auth objects
-        console.log(`Authenticating user ${this.username} (${this.userId})`);
+        console.log(`[WebSocket] Authenticating user ${this.username} (${this.userId})`);
         this.send({
-            action: 'authenticate',
-            user_id: String(this.userId), // Always send as string
+            type: 'authenticate',
+            user_id: this.userId,
             username: this.username,
             token: this.authToken
         });
@@ -214,44 +204,35 @@ export class WebSocketService {
      */
     private attemptReconnect(): void {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.log('Maximum reconnect attempts reached');
+            console.log('[WebSocket] Maximum reconnect attempts reached');
             this.emit('reconnect_failed');
             return;
         }
-
         this.reconnectAttempts++;
-        console.log(`Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${this.reconnectTimeout / 1000}s...`);
-
-        // Store current room info before reconnecting
+        console.log(`[WebSocket] Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${this.reconnectTimeout / 1000}s...`);
         const currentRoomId = gameState.roomId;
         const currentRoomName = gameState.roomName;
-
         setTimeout(() => {
             if (this.userId && this.username && this.authToken) {
                 this.connect(this.userId, this.username, this.authToken);
-
-                // If we were in a room before, try to rejoin after authentication
                 if (currentRoomId) {
-                    // Wait for authentication before trying to rejoin
                     const authHandler = () => {
-                        console.log(`Attempting to rejoin room ${currentRoomId} after reconnection`);
+                        console.log(`[WebSocket] Attempting to rejoin room ${currentRoomId} after reconnection`);
                         this.joinRoom(currentRoomId);
                         this.off('authenticated', authHandler);
                     };
-
                     this.on('authenticated', authHandler);
                 }
             }
         }, this.reconnectTimeout);
-
-        // Exponential backoff
-        this.reconnectTimeout = Math.min(this.reconnectTimeout * 2, 30000); // Max 30s
+        this.reconnectTimeout = Math.min(this.reconnectTimeout * 2, 30000);
     }
 
     /**
      * Close the WebSocket connection
      */
     public disconnect(): void {
+        this.stopHeartbeat();
         if (this.ws) {
             this.ws.close();
             this.ws = null;
@@ -278,7 +259,7 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'create_room',
+            type: 'create_room',
             room_name: roomName,
             max_players: maxPlayers
         });
@@ -294,7 +275,7 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'join_room',
+            type: 'join_room',
             room_id: roomId
         });
     }
@@ -303,14 +284,28 @@ export class WebSocketService {
      * Leave the current room
      */
     public leaveRoom(): void {
-        if (!gameState.roomId) {
-            console.error('Cannot leave room: Not in a room');
+        if (!gameState.roomId) return;
+        
+        // Make sure we have the user ID
+        if (!this.userId) {
+            console.error('[WebSocket] Cannot leave room: No user ID');
             return;
         }
-
-        this.send({
-            action: 'leave_room'
+        
+        this.send({ 
+            type: 'leave_room', 
+            room_id: gameState.roomId,
+            player_id: this.userId
         });
+        
+        gameState.roomId = null;
+        gameState.roomName = null;
+        gameState.players = [];
+        gameState.status = 'waiting';
+        gameState.hand = [];
+        gameState.isYourTurn = false;
+        gameState.playerReady = false;
+        this.emit('left_room');
     }
 
     /**
@@ -323,7 +318,7 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'list_rooms'
+            type: 'list_rooms'
         });
     }
 
@@ -332,15 +327,27 @@ export class WebSocketService {
      */
     public setReadyStatus(ready: boolean): void {
         if (!gameState.roomId) {
-            console.error('Cannot set ready status: Not in a room');
+            console.error('[WebSocket] Cannot set ready status: Not in a room');
             return;
         }
+        
+        console.log(`[WebSocket] Setting ready status to ${ready ? 'ready' : 'not ready'}`);
 
         this.send({
-            action: 'set_ready_status',
-            ready: ready,
-            room_id: gameState.roomId
+            type: 'player_ready',
+            room_id: gameState.roomId,
+            ready: ready
         });
+        
+        // Optimistically update local state
+        const myUserId = this.userId;
+        if (gameState.players && myUserId) {
+            const myPlayer = gameState.players.find(p => p.user_id === myUserId);
+            if (myPlayer) {
+                myPlayer.status = ready ? 'ready' : 'not_ready';
+                myPlayer.ready = ready;
+            }
+        }
     }
 
     /**
@@ -348,13 +355,13 @@ export class WebSocketService {
      */
     public send(data: GameAction): void {
         if (!this.ws) {
-            console.error('WebSocket is null');
+            console.error('[WebSocket] WebSocket is null');
             this.emit('server_error', { message: 'Błąd połączenia: Brak inicjalizacji WebSocket' });
             return;
         }
 
         if (this.ws.readyState !== WebSocket.OPEN) {
-            console.error(`WebSocket is not open, current state: ${this.ws.readyState}`);
+            console.error(`[WebSocket] WebSocket is not open, current state: ${this.ws.readyState}`);
             this.emit('server_error', { message: 'Błąd połączenia: WebSocket nie jest gotowy do wysyłania' });
             return;
         }
@@ -362,7 +369,7 @@ export class WebSocketService {
         try {
             this.ws.send(JSON.stringify(data));
         } catch (error) {
-            console.error('Error sending message:', error);
+            console.error('[WebSocket] Error sending message:', error);
             this.emit('server_error', { message: 'Błąd wysyłania wiadomości do serwera' });
         }
     }
@@ -443,7 +450,8 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'play_card',
+            type: 'game_action',
+            action_type: 'play_card',
             card_index: cardIndex
         });
     }
@@ -452,18 +460,12 @@ export class WebSocketService {
      * Start the game (only room creator can do this)
      */
     startGame(): void {
-        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             console.error('Cannot start game: WebSocket is not connected');
             return;
         }
-
-        if (!gameState.isRoomCreator) {
-            console.error('Cannot start game: User is not the room creator');
-            return;
-        }
-
-        this.socket.send(JSON.stringify({
-            action: 'start_game',
+        this.ws.send(JSON.stringify({
+            type: 'start_game',
             room_id: gameState.roomId
         }));
     }
@@ -478,7 +480,8 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'draw_card'
+            type: 'game_action',
+            action_type: 'draw_card'
         });
     }
 
@@ -492,7 +495,8 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'pass_turn'
+            type: 'game_action',
+            action_type: 'pass_turn'
         });
     }
 
@@ -511,24 +515,22 @@ export class WebSocketService {
                     break;
 
                 case 'auth_success':
-                    // Parse the message to ensure we have access to the user_id
-                    const parsedMessage = typeof message === 'string' ? JSON.parse(message) : message;
-                    console.log('Received auth_success with data:', JSON.stringify(parsedMessage));
-
-                    // Always use the user ID returned by the server - this is the authoritative source
-                    if (parsedMessage && typeof parsedMessage === 'object') {
-                        // The server sends user_id directly in the response object
-                        if (parsedMessage.user_id !== undefined) {
-                            // Make sure to convert to number for consistent handling
-                            this.userId = parseInt(String(parsedMessage.user_id), 10);
-                            console.log(`Using authoritative user ID from server: ${this.userId} (converted to number)`);
-                        }
-                    }
-
-                    gameState.connectionId = this.userId ? String(this.userId) : null;
+                    console.log('Received auth_success with data:', message);
                     gameState.isAuthenticated = true;
-                    console.log('Authentication successful with user ID:', this.userId, 'Type:', typeof this.userId);
-                    this.emit('authenticated', parsedMessage);
+                    this.isAuthenticating = false;
+                    // Update user info from auth response
+                    if (message.user) {
+                        this.userId = message.user.id;
+                        this.username = message.user.username;
+                    }
+                    this.emit('authenticated', message);
+                    break;
+
+                case 'auth_error':
+                    console.error('Authentication error:', message);
+                    gameState.isAuthenticated = false;
+                    this.isAuthenticating = false;
+                    this.emit('auth_error', message);
                     break;
 
                 case 'room_created':
@@ -541,26 +543,22 @@ export class WebSocketService {
                 case 'room_joined':
                     gameState.roomId = message.room_id;
                     gameState.roomName = message.room_name;
-                    // Make sure player data is normalized
                     if (message.players && Array.isArray(message.players)) {
                         // Filter out duplicate players (same user_id) and normalize properties
-                        const uniquePlayers = {};
-                        message.players.forEach(player => {
+                        const uniquePlayers: Record<string, Player> = {};
+                        message.players.forEach((player: any) => {
                             const userId = player.user_id || player.id;
-                            // Only keep the first instance of each user_id
                             if (!uniquePlayers[userId]) {
                                 uniquePlayers[userId] = {
                                     user_id: userId,
                                     username: player.username || player.name || 'Gracz',
-                                    status: player.status || 'waiting',
+                                    status: player.status || 'not_ready',
+                                    ready: player.status === 'ready',
                                     score: player.score || 0,
-                                    cards_count: player.cards_count || 0,
-                                    ready: player.ready || false
+                                    cards_count: player.cards_count || 0
                                 };
                             }
                         });
-
-                        // Convert the object of unique players back to an array
                         gameState.players = Object.values(uniquePlayers);
                         console.log('Room joined, normalized players (unique by user_id):', gameState.players);
                     } else {
@@ -570,15 +568,24 @@ export class WebSocketService {
                     this.emit('room_joined', message);
                     break;
 
+                case 'creating_room':
+                    console.log('Room is being created:', message);
+                    // Store room ID but mark status as creating
+                    gameState.roomId = message.room_id;
+                    gameState.status = 'creating';
+                    // Let the UI know that the room is being created
+                    this.emit('creating_room', message);
+                    break;
+
                 case 'player_joined':
                     // Add the new player to the players array with proper field mapping
                     const newPlayer = {
                         user_id: message.player.user_id || message.player.id,
                         username: message.player.username || message.player.name || 'Gracz',
-                        status: message.player.status || 'waiting',
+                        status: message.player.status || 'not_ready',
                         score: message.player.score || 0,
                         cards_count: message.player.cards_count || 0,
-                        ready: message.player.ready || false
+                        ready: message.player.ready || message.player.status === 'ready'
                     };
 
                     // Check if player with this user_id already exists in gameState.players
@@ -606,31 +613,28 @@ export class WebSocketService {
                     break;
 
                 case 'left_room':
-                    // We've left the room
                     gameState.roomId = null;
                     gameState.roomName = null;
                     gameState.players = [];
                     gameState.hand = [];
-                    gameState.isPlayer = false; // Reset isPlayer state
-                    gameState.isRoomCreator = false; // Reset isRoomCreator state
                     gameState.status = 'waiting';
                     this.emit('left_room', message);
                     break;
 
-                                    case 'ready_status_updated':
+                case 'ready_status_updated':
                     // Our own ready status was updated
                     gameState.playerReady = message.ready;
                     this.emit('ready_status_updated', message);
                     break;
 
-                case 'game_started':
+                case 'game_start':
                     gameState.status = 'playing';
                     gameState.players = message.players;
                     gameState.currentTurn = message.current_player_index;
                     gameState.currentPlayerId = message.current_player?.user_id || null;
                     gameState.deckCount = message.deck_remaining;
                     gameState.isYourTurn = message.current_player?.user_id === this.userId;
-                    this.emit('game_started', message);
+                    this.emit('game_start', message);
                     break;
 
                 case 'your_cards':
@@ -638,87 +642,53 @@ export class WebSocketService {
                     this.emit('cards_updated', message);
                     break;
 
-                case 'card_played':
-                    // Update last card played
-                    gameState.lastCard = message.card;
-                    gameState.playArea = [...gameState.playArea, message.card];
-
-                    // Update player's cards count
-                    const playerIndex = gameState.players.findIndex(p => p.user_id === message.player_id);
-                    if (playerIndex !== -1) {
-                        gameState.players[playerIndex].cards_count = message.remaining_cards;
-                    }
-
-                    this.emit('card_played', message);
+                case 'game_action':
+                    this.handleGameAction(message);
                     break;
 
-                case 'card_drawn':
-                    gameState.hand = message.hand;
-                    gameState.deckCount--;
-                    this.emit('card_drawn', message);
+                case 'heartbeat_ack':
+                    // Just acknowledge the heartbeat
                     break;
 
-                case 'player_drew_card':
-                    // Update player's cards count
-                    const drawingPlayerIndex = gameState.players.findIndex(p => p.user_id === message.player_id);
-                    if (drawingPlayerIndex !== -1) {
-                        gameState.players[drawingPlayerIndex].cards_count = message.cards_count;
-                    }
-                    gameState.deckCount = message.deck_remaining;
-                    this.emit('player_drew_card', message);
-                    break;
-
-                case 'turn_changed':
-                    gameState.currentTurn = message.turn_index;
-                    gameState.currentPlayerId = message.current_player_id;
-                    gameState.isYourTurn = message.current_player_id === this.userId;
-                    this.emit('turn_changed', message);
-                    break;
-
-                case 'game_over':
+                case 'game_ended':
                     gameState.status = 'ended';
                     gameState.winner = message.winner;
                     gameState.isYourTurn = false;
-                    this.emit('game_over', message);
+                    this.emit('game_ended', message);
                     break;
 
                 case 'error':
-                    console.error('Server error:', message.message, message);
-
-                    // Check for specific error types and handle accordingly
-                    if (message.message.includes('Room not found')) {
-                        // Reset room state as we couldn't join
-                        gameState.roomId = null;
-                        gameState.roomName = null;
-                        gameState.players = [];
-
-                        // Get the attempted room ID from the last sent message if available
-                        let attemptedRoomId = 'unknown';
-                        try {
-                            // Attempt to extract room_id from the error context if available
-                            if (message.context && message.context.room_id) {
-                                attemptedRoomId = message.context.room_id;
-                            }
-                        } catch (e) {
-                            console.error('Error extracting room ID from error message:', e);
+                    console.error('Server error:', message);
+                    if (message.message === 'Authentication required') {
+                        gameState.isAuthenticated = false;
+                        // Try to re-authenticate only if not already authenticating
+                        if (!this.isAuthenticating) {
+                            console.log('Authentication required, attempting to re-authenticate...');
+                            this.authenticate();
+                        } else {
+                            console.log('Already authenticating, skipping re-authentication...');
                         }
-
-                        // Emit a specific room_not_found event
-                        this.emit('room_not_found', {
-                            message: `The requested game room does not exist: ${attemptedRoomId}`,
-                            original: message,
-                            roomId: attemptedRoomId
-                        });
-
-                        console.warn(`Attempted to join a non-existent room: ${attemptedRoomId}`);
-                    } else if (message.message.includes('Room is full')) {
-                        this.emit('room_full', message);
-                    } else if (message.message.includes('Cannot join a game')) {
-                        this.emit('game_already_started', message);
                     }
+                    this.emit('error', message);
+                    break;
 
-                    // Always emit the general server_error event
+                case 'player_status_changed':
+                    this.emit('player_status_changed', message);
+                    break;
 
+                case 'online_count':
+                    this.emit('online_count', message.count);
+                    break;
+
+                case 'room_full':
+                    this.emit('room_full', message);
+                    break;
+
+                case 'room_not_found':
+                    this.emit('room_not_found', message);
+                    break;
+
+                case 'server_error':
                     this.emit('server_error', message);
                     break;
 
@@ -727,6 +697,35 @@ export class WebSocketService {
             }
         } catch (error) {
             console.error('Error parsing message:', error, data);
+        }
+    }
+
+    private handleGameAction(message: any): void {
+        switch (message.action) {
+            case 'card_played':
+                gameState.playArea = message.play_area;
+                gameState.lastCard = message.last_card;
+                gameState.currentPlayerId = message.next_player_id;
+                gameState.isYourTurn = message.next_player_id === this.userId;
+                this.emit('card_played', message);
+                break;
+
+            case 'card_drawn':
+                gameState.hand = message.hand;
+                gameState.deckCount = message.deck_count;
+                gameState.currentPlayerId = message.next_player_id;
+                gameState.isYourTurn = message.next_player_id === this.userId;
+                this.emit('card_drawn', message);
+                break;
+
+            case 'game_ended':
+                gameState.status = 'ended';
+                gameState.winner = message.winner;
+                this.emit('game_ended', message);
+                break;
+
+            default:
+                console.warn('Unknown game action:', message.action);
         }
     }
 
@@ -754,7 +753,7 @@ export class WebSocketService {
 
         console.log(`Attempting to join room: ${roomId} as user ${this.username} (${this.userId})`);
         this.send({
-            action: 'join_room',
+            type: 'join_room',
             room_id: roomId,
             // Adding explicit user info to ensure server can identify the player
             user_id: this.userId,
@@ -782,7 +781,7 @@ export class WebSocketService {
         }
 
         this.send({
-            action: 'game_action',
+            type: 'game_action',
             action_type: 'play_card',
             card_index: cardIndex
         });
@@ -793,23 +792,139 @@ export class WebSocketService {
     // Listen for player status updates
     private setupPlayerStatusListener(): void {
         // Handle player status changed events (for other players)
-        this.on('player_status_changed', (data) => {
+        this.on('player_status_changed', (data: any) => {
             console.log('Player status changed:', data);
             if (gameState.players) {
-                const player = gameState.players.find(p => p.user_id === data.player_id);
+                const player = gameState.players.find((p: Player) => p.user_id === data.player_id);
                 if (player) {
                     player.status = data.status;
                     player.ready = data.ready;
+                    console.log(`Updated player ${player.username} status to ${data.status}`);
+                } else {
+                    console.warn(`Player with ID ${data.player_id} not found in gameState`);
                 }
             }
         });
 
         // Handle own ready status update confirmation
-        this.on('ready_status_updated', (data) => {
+        this.on('ready_status_updated', (data: any) => {
             console.log('Your ready status updated:', data);
             gameState.playerReady = data.ready;
+            
+            // Also update your status in the players array
+            const myUserId = this.userId;
+            if (gameState.players && myUserId) {
+                const myPlayer = gameState.players.find((p: Player) => p.user_id === myUserId);
+                if (myPlayer) {
+                    myPlayer.status = data.status;
+                    myPlayer.ready = data.ready;
+                    console.log(`Updated your status to ${data.status}`);
+                }
+            }
+        });
+    }
+
+    /**
+     * Join matchmaking queue (public/private, size, code)
+     */
+    public joinMatchmaking(size: number, isPrivate: boolean, privateCode: string | null = null): void {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            console.error('Cannot join matchmaking: WebSocket is not connected');
+            this.emit('error', { message: 'Cannot join matchmaking: WebSocket is not connected' });
+            return;
+        }
+
+        if (!gameState.isAuthenticated || !this.userId) {
+            console.error('Cannot join matchmaking: Not authenticated');
+            this.emit('error', { message: 'Cannot join matchmaking: Not authenticated' });
+            // Try to re-authenticate only if not already authenticating
+            if (!this.isAuthenticating) {
+                console.log('Not authenticated, attempting to authenticate...');
+                this.authenticate();
+            } else {
+                console.log('Already authenticating, skipping authentication...');
+            }
+            return;
+        }
+
+        // Reset game state before joining new queue
+        gameState.roomId = null;
+        gameState.roomName = null;
+        gameState.players = [];
+        gameState.status = 'waiting';
+        gameState.playerReady = false;
+
+        console.log(`Joining matchmaking as user ${this.username} (${this.userId})`);
+        this.send({
+            type: 'matchmaking_join',
+            size,
+            is_private: isPrivate,
+            private_code: privateCode
+        });
+    }
+
+    public leaveMatchmaking(): void {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            console.error('Cannot leave matchmaking: WebSocket is not connected');
+            return;
+        }
+
+        this.send({
+            type: 'matchmaking_leave'
         });
 
+        // Reset game state
+        gameState.roomId = null;
+        gameState.roomName = null;
+        gameState.players = [];
+        gameState.status = 'waiting';
+        gameState.playerReady = false;
+    }
+
+    public getOnlineCount(): void {
+        this.send({ type: 'get_online_count' });
+    }
+
+    /**
+     * Start performance demo (tworzy wiele pokoi z botami po stronie serwera)
+     */
+    public startPerformanceDemo(rooms: number = 100, players: number = 4): void {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            alert('WebSocket nie jest połączony!');
+            return;
+        }
+        this.send({
+            type: 'start_performance_demo',
+            rooms,
+            players
+        });
+        const handler = (data: any) => {
+            if (data.type === 'performance_demo_started') {
+                alert(`Performance demo uruchomione!\nPokoje: ${data.rooms}\nBotów w pokoju: ${data.players_per_room}`);
+                this.off('performance_demo_started', handler);
+            }
+        };
+        this.on('performance_demo_started', handler);
+    }
+
+    private startHeartbeat(): void {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+        }
+
+        this.heartbeatInterval = window.setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.send({ type: 'heartbeat' });
+                // No need to expect heartbeat_ack anymore
+            }
+        }, 30000); // Send heartbeat every 30 seconds
+    }
+
+    private stopHeartbeat(): void {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
     }
 }
 

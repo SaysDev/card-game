@@ -1,0 +1,7 @@
+
+  PHP Warning:  JIT is incompatible with third party extensions that override zend_execute_ex(). JIT disabled. in Unknown on line 0
+
+   INFO  Server running on [http://127.0.0.1:3000].  
+
+  Press Ctrl+C to stop the server
+

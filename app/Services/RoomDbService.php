@@ -61,11 +61,9 @@ class RoomDbService
     public static function getRoom(string $roomId): ?array
     {
         try {
-            // Try to find by ID if it's numeric
             if (is_numeric($roomId)) {
                 $room = GameRoom::find((int)$roomId);
             } else {
-                // If not numeric, try to find by name
                 $room = GameRoom::where('name', $roomId)->first();
             }
 
@@ -101,7 +99,6 @@ class RoomDbService
             if (is_numeric($roomId)) {
                 $deletedCount = GameRoom::where('id', (int)$roomId)->delete();
             } else {
-                // If not numeric, try to delete by name
                 $deletedCount = GameRoom::where('name', $roomId)->delete();
             }
 
@@ -158,17 +155,13 @@ class RoomDbService
         try {
             $cutoffDate = now()->subHours($olderThanHours);
 
-            // First, count how many rooms will be affected
             $count = GameRoom::where('status', 'ended')
                 ->where('updated_at', '<', $cutoffDate)
                 ->count();
 
-            // Then delete them
             GameRoom::where('status', 'ended')
                 ->where('updated_at', '<', $cutoffDate)
                 ->delete();
-
-            // Clear the cache after purging
             Cache::forget('active_game_rooms');
 
             Log::info("Purged {$count} old game rooms older than {$olderThanHours} hours");
@@ -178,71 +171,68 @@ class RoomDbService
             Log::error('Error purging old game rooms: ' . $e->getMessage());
             return 0;
         }
-}
-
-/**
- * Clear the cache for a specific room or all rooms
- *
- * @param string|null $roomId Specific room ID or null for all rooms
- * @return void
- */
-public static function clearRoomCache(?string $roomId = null): void
-{
-    try {
-        if ($roomId) {
-            // Clear cache for specific room
-            Cache::forget('game_room_' . $roomId);
-            Log::info("Cleared cache for room {$roomId}");
-        }
-
-        // Also clear the list of all rooms
-        Cache::forget('active_game_rooms');
-    } catch (\Exception $e) {
-        Log::error('Error clearing room cache: ' . $e->getMessage(), [
-            'roomId' => $roomId
-        ]);
     }
-}
 
-/**
- * Get information about the room structure and model relationships
- *
- * This method provides documentation about how Game and GameRoom models
- * relate to each other, which can be useful for debugging or understanding
- * the system architecture.
- *
- * @return array
- */
-public static function getModelInfo(): array
-{
-    return [
-        'models' => [
-            'Game' => [
-                'description' => 'Base model for all game types',
-                'table' => 'games',
-                'relationships' => ['players', 'users'],
-                'primary_key' => 'id'
+    /**
+     * Clear the cache for a specific room or all rooms
+     *
+     * @param string|null $roomId Specific room ID or null for all rooms
+     * @return void
+     */
+    public static function clearRoomCache(?string $roomId = null): void
+    {
+        try {
+            if ($roomId) {
+                Cache::forget('game_room_' . $roomId);
+                Log::info("Cleared cache for room {$roomId}");
+            }
+            Cache::forget('active_game_rooms');
+        } catch (\Exception $e) {
+            Log::error('Error clearing room cache: ' . $e->getMessage(), [
+                'roomId' => $roomId
+            ]);
+        }
+    }
+
+    /**
+     * Get information about the room structure and model relationships
+     *
+     * This method provides documentation about how Game and GameRoom models
+     * relate to each other, which can be useful for debugging or understanding
+     * the system architecture.
+     *
+     * @return array
+     */
+    public static function getModelInfo(): array
+    {
+        return [
+            'models' => [
+                'Game' => [
+                    'description' => 'Base model for all game types',
+                    'table' => 'games',
+                    'relationships' => ['players', 'users'],
+                    'primary_key' => 'id'
+                ],
+                'GameRoom' => [
+                    'description' => 'Specialized model extending Game for room management',
+                    'table' => 'games (same as Game)',
+                    'extends' => 'Game',
+                    'virtual_attributes' => ['room_id'],
+                    'websocket_compatible' => true
+                ],
+                'GamePlayer' => [
+                    'description' => 'Pivot model for tracking players in games',
+                    'table' => 'game_players',
+                    'relationships' => ['game', 'user'],
+                    'primary_key' => 'id',
+                    'fields' => ['status', 'score', 'cards', 'last_action_at']
+                ]
             ],
-            'GameRoom' => [
-                'description' => 'Specialized model extending Game for room management',
-                'table' => 'games (same as Game)',
-                'extends' => 'Game',
-                'virtual_attributes' => ['room_id'],
-                'websocket_compatible' => true
-            ],
-            'GamePlayer' => [
-                'description' => 'Pivot model for tracking players in games',
-                'table' => 'game_players',
-                'relationships' => ['game', 'user'],
-                'primary_key' => 'id',
-                'fields' => ['status', 'score', 'cards', 'last_action_at']
+            'usage' => [
+                'database_operations' => 'Use GameRoom for WebSocket server operations',
+                'game_logic' => 'Use Game for general game state and relationships',
+                'identifiers' => 'room_id in WebSocket server maps to id in database'
             ]
-        ],
-        'usage' => [
-            'database_operations' => 'Use GameRoom for WebSocket server operations',
-            'game_logic' => 'Use Game for general game state and relationships',
-            'identifiers' => 'room_id in WebSocket server maps to id in database'
-        ]
-    ];
-}
+        ];
+    }
 }

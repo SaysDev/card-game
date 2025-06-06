@@ -4,7 +4,7 @@ import { ref } from 'vue';
 
 const form = useForm({
   name: '',
-  max_players: 4, // Default value
+  max_players: 4,
 });
 
 const processing = ref(false);

@@ -20,32 +20,29 @@ class MemoryStorage
 
     private function initializeTables(): void
     {
-        // Table for game rooms
         $this->gameRooms = new Table(1024);
-        $this->gameRooms->column('name', Table::TYPE_STRING, 64);       // Room name
-        $this->gameRooms->column('status', Table::TYPE_STRING, 16);     // 'waiting', 'playing', 'ended'
-        $this->gameRooms->column('max_players', Table::TYPE_INT, 4);    // Max players in room
-        $this->gameRooms->column('current_players', Table::TYPE_INT, 4); // Current player count
-        $this->gameRooms->column('game_data', Table::TYPE_STRING, 8192); // JSON encoded game state
-        $this->gameRooms->column('created_at', Table::TYPE_INT, 8);     // Unix timestamp
+        $this->gameRooms->column('name', Table::TYPE_STRING, 64);
+        $this->gameRooms->column('status', Table::TYPE_STRING, 16);
+        $this->gameRooms->column('max_players', Table::TYPE_INT, 4);
+        $this->gameRooms->column('current_players', Table::TYPE_INT, 4);
+        $this->gameRooms->column('game_data', Table::TYPE_STRING, 8192);
+        $this->gameRooms->column('created_at', Table::TYPE_INT, 8);
         $this->gameRooms->create();
 
-        // Table for players
         $this->players = new Table(4096);
-        $this->players->column('user_id', Table::TYPE_INT, 8);           // User ID from database
-        $this->players->column('username', Table::TYPE_STRING, 64);      // Player username
-        $this->players->column('room_id', Table::TYPE_STRING, 64);       // Current room ID
-        $this->players->column('status', Table::TYPE_STRING, 16);        // 'online', 'playing', 'spectating'
-        $this->players->column('cards', Table::TYPE_STRING, 1024);       // JSON encoded cards data
-        $this->players->column('score', Table::TYPE_INT, 4);             // Player score
-        $this->players->column('last_activity', Table::TYPE_INT, 8);     // Last activity timestamp
+        $this->players->column('user_id', Table::TYPE_INT, 8);
+        $this->players->column('username', Table::TYPE_STRING, 64);
+        $this->players->column('room_id', Table::TYPE_STRING, 64);
+        $this->players->column('status', Table::TYPE_STRING, 16);
+        $this->players->column('cards', Table::TYPE_STRING, 1024);
+        $this->players->column('score', Table::TYPE_INT, 4);
+        $this->players->column('last_activity', Table::TYPE_INT, 8);
         $this->players->create();
 
-        // Table for mapping connections to players
         $this->connections = new Table(4096);
-        $this->connections->column('fd', Table::TYPE_INT, 8);            // Connection file descriptor
-        $this->connections->column('user_id', Table::TYPE_INT, 8);       // User ID
-        $this->connections->column('connected_at', Table::TYPE_INT, 8);  // Connection time
+        $this->connections->column('fd', Table::TYPE_INT, 8);
+        $this->connections->column('user_id', Table::TYPE_INT, 8);
+        $this->connections->column('connected_at', Table::TYPE_INT, 8);
         $this->connections->create();
     }
 
@@ -54,8 +51,6 @@ class MemoryStorage
     public function createRoom(string $roomId, array $roomData): void
     {
         $this->gameRooms->set($roomId, $roomData);
-
-        // Save to database
         try {
             RoomDbService::saveRoom($roomId, $roomData);
         } catch (\Exception $e) {
@@ -68,12 +63,9 @@ class MemoryStorage
         if ($this->gameRooms->exists($roomId)) {
             return $this->gameRooms->get($roomId);
         }
-
-        // Try to get from database if not in memory
         try {
             $roomData = RoomDbService::getRoom($roomId);
             if ($roomData) {
-                // Add to memory storage
                 $this->gameRooms->set($roomId, $roomData);
                 return $roomData;
             }
@@ -88,8 +80,6 @@ class MemoryStorage
     {
         if ($this->gameRooms->exists($roomId)) {
             $this->gameRooms->set($roomId, $roomData);
-
-            // Save to database
             try {
                 RoomDbService::saveRoom($roomId, $roomData);
             } catch (\Exception $e) {
@@ -102,8 +92,6 @@ class MemoryStorage
     {
         if ($this->gameRooms->exists($roomId)) {
             $this->gameRooms->del($roomId);
-
-            // Remove from database
             try {
                 RoomDbService::deleteRoom($roomId);
             } catch (\Exception $e) {
@@ -221,13 +209,8 @@ class MemoryStorage
 
         foreach ($this->gameRooms as $roomId => $room) {
             $gameData = json_decode($room['game_data'], true);
-
-            // Check if room has been inactive
             if (isset($gameData['last_updated']) && ($currentTime - $gameData['last_updated']) > $inactiveThreshold) {
-                // Remove the room
                 $this->removeRoom($roomId);
-
-                // Update player records to remove them from this room
                 foreach ($this->players as $fd => $player) {
                     if ($player['room_id'] === $roomId) {
                         $this->players->set($fd, [
@@ -255,10 +238,7 @@ class MemoryStorage
         }
 
         try {
-            // Get all active rooms from database
             $rooms = RoomDbService::getAllRooms();
-
-            // Load each room into memory
             foreach ($rooms as $roomId => $roomData) {
                 $this->gameRooms->set($roomId, $roomData);
             }
@@ -268,5 +248,14 @@ class MemoryStorage
         } catch (\Exception $e) {
             echo "Error loading rooms from database: " . $e->getMessage() . "\n";
         }
+    }
+
+    public function getOnlineCount(): int
+    {
+        $count = 0;
+        foreach ($this->connections as $c) {
+            $count++;
+        }
+        return $count;
     }
 }

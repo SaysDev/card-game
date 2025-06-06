@@ -2,8 +2,9 @@
 
 namespace App\Console\Commands;
 
-use App\Servers\WebSocketServer;
 use Illuminate\Console\Command;
+use App\Servers\WebSocketServer;
+use App\Servers\Utilities\Logger;
 
 class StartWebSocketServer extends Command
 {
@@ -12,14 +13,22 @@ class StartWebSocketServer extends Command
      *
      * @var string
      */
-    protected $signature = 'websocket:start {--host=0.0.0.0} {--port=9502}';
+    protected $signature = 'websocket:start {--port=9502} {--host=0.0.0.0} {--server-id=websocket-server-1}';
 
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Start the OpenSwoole WebSocket server for the card game';
+    protected $description = 'Start the WebSocket server';
+
+    /**
+     * Create a new command instance.
+     */
+    public function __construct()
+    {
+        parent::__construct();
+    }
 
     /**
      * Execute the console command.
@@ -36,13 +45,15 @@ class StartWebSocketServer extends Command
             return Command::FAILURE;
         }
 
+        $port = $this->option('port');
         $host = $this->option('host');
-        $port = (int) $this->option('port');
+        $serverId = $this->option('server-id');
 
         $this->info("Server will listen on {$host}:{$port}");
 
         try {
-            $server = new WebSocketServer($host, $port);
+            $logger = new \App\Servers\Utilities\Logger($serverId);
+            $server = new \App\Servers\WebSocketServer($host, $port, $logger);
             $server->start();
             return Command::SUCCESS;
         } catch (\Throwable $e) {

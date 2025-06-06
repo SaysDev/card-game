@@ -1,3 +1,4 @@
+import { usePage } from '@inertiajs/vue3';
 import { ref, computed } from 'vue';
 
 export interface User {
@@ -55,34 +56,12 @@ export function useAuth() {
     }
 
     // Try to get user ID from route params or URL
-    let defaultUserId;
-    try {
-      // Check if we have a user ID in the URL or route params
-      const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.has('user_id')) {
-        defaultUserId = parseInt(urlParams.get('user_id') || '', 10);
-      }
-
-      // If still no user ID, use a reasonable default only for development
-      if (!defaultUserId || isNaN(defaultUserId)) {
-        // In production, we should avoid setting mock users
-        if (process.env.NODE_ENV === 'development') {
-          defaultUserId = 1; // Default for development only
-        } else {
-          // In production, don't set a default - return null user
-          console.warn('No valid user ID found and not in development mode');
-          return;
-        }
-      }
-    } catch (error) {
-      console.error('Error determining default user ID:', error);
-      return; // Don't set a user if we can't determine the ID
-    }
-
+    let defaultUserId = usePage().props?.auth?.user?.id;
+    
     user.value = {
-      id: defaultUserId,
-      name: `Gracz ${defaultUserId}`,
-      email: `player${defaultUserId}@example.com`,
+      id: usePage().props?.auth?.user?.id,
+      name: usePage().props?.auth?.user?.name,
+      email: usePage().props?.auth?.user?.email,
       avatar: `https://picsum.photos/seed/${defaultUserId}/60/60`
     };
 

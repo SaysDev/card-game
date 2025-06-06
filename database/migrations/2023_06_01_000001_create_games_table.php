@@ -34,17 +34,7 @@ return new class extends Migration
 
             $table->unique(['game_id', 'user_id']);
         });
-        Schema::create('game_players', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('game_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->enum('status', ['waiting', 'playing', 'spectating', 'left'])->default('waiting');
-            $table->unsignedSmallInteger('score')->default(0);
-            $table->json('cards')->nullable();
-            $table->timestamps();
 
-            $table->unique(['game_id', 'user_id']);
-        });
     }
 
     /**
@@ -53,7 +43,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('game_user');
-        Schema::dropIfExists('game_players');
         Schema::dropIfExists('games');
     }
 };

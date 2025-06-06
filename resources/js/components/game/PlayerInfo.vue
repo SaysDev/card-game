@@ -4,14 +4,13 @@ import { defineProps } from 'vue';
 interface PlayerInfoProps {
     name: string;
     level: number;
-    avatarUrl?: string; // Opcjonalny URL do avatara
-    isMainPlayer?: boolean; // Czy to jest główny gracz
+    avatarUrl?: string;
+    isMainPlayer?: boolean;
 }
 
 const props = defineProps<PlayerInfoProps>();
 
-// Domyślny avatar, jeśli nie podano URL
-const defaultAvatar = 'https://via.placeholder.com/40/000000/FFFFFF?text=P'; // Mniejszy placeholder
+const defaultAvatar = 'https://via.placeholder.com/40/000000/FFFFFF?text=P';
 </script>
 
 <template>
@@ -81,7 +80,6 @@ const defaultAvatar = 'https://via.placeholder.com/40/000000/FFFFFF?text=P'; // 
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-/* Styl dla głównego gracza */
 .player-info-container.main-player {
     background-color: rgba(34, 197, 94, 0.3);
     border: 1px solid #22c55e;

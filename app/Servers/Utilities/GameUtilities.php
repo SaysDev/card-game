@@ -44,7 +44,6 @@ class GameUtilities
             }
         }
 
-        // Shuffle the deck
         shuffle($deck);
 
         return $deck;

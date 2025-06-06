@@ -1,0 +1,13 @@
+
+Starting game server game-server-1 with capacity 100
+Connecting to WebSocket server at ws://localhost:9502
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] Starting game server command  {"ws_url":"ws:\/\/localhost:9502","server_id":"game-server-1","capacity":100}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] GameServer initialized  {"server_id":"game-server-1","ws_url":"ws:\/\/localhost:9502","capacity":100}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] Starting game server  {"server_id":"game-server-1"}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] Server token generated  {"server_id":"game-server-1"}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] Connecting to WebSocket server  {"ws_url":"ws:\/\/localhost:9502"}
+ [PID:226824][game-server-1][ERROR][2025-06-06 05:58:33] Could not connect to WebSocket server  {"error":"Connection to tcp:\/\/localhost:9502 failed: Last error for IPv4: Connection to tcp:\/\/127.0.0.1:9502 failed: Connection refused (ECONNREFUSED). Previous error for IPv6: Connection to tcp:\/\/[::1]:9502 failed: Connection refused (ECONNREFUSED)"}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:33] Attempting to reconnect 
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:38] Connecting to WebSocket server  {"ws_url":"ws:\/\/localhost:9502"}
+ [PID:226824][game-server-1][ERROR][2025-06-06 05:58:38] Could not connect to WebSocket server  {"error":"Connection to tcp:\/\/localhost:9502 failed: Last error for IPv4: Connection to tcp:\/\/127.0.0.1:9502 failed: Connection refused (ECONNREFUSED). Previous error for IPv6: Connection to tcp:\/\/[::1]:9502 failed: Connection refused (ECONNREFUSED)"}
+ [PID:226824][game-server-1][INFO][2025-06-06 05:58:38] Attempting to reconnect 
