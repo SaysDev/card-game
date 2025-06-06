@@ -385,12 +385,38 @@ class GameServer
 
     private function startGame(string $roomId): void
     {
-        $this->logger->info("Starting game in room", ['room_id' => $roomId]);
-        
-        // Send game start message to all players
-        $this->broadcastToRoom($roomId, [
-            'type' => 'game_start',
-            'room_id' => $roomId
+        if (!isset($this->rooms[$roomId])) {
+            return;
+        }
+
+        $room = &$this->rooms[$roomId];
+        if ($room['status'] !== 'waiting') {
+            return;
+        }
+
+        // Deal cards to players
+        $deck = $room['game_data']['deck'];
+        foreach ($room['players'] as $playerId => &$player) {
+            $player['cards'] = array_splice($deck, 0, 7);
+        }
+
+        // Set first card and current turn
+        $room['game_data']['last_card'] = array_shift($deck);
+        $room['game_data']['deck'] = $deck;
+        $room['game_data']['current_turn'] = array_key_first($room['players']);
+        $room['status'] = 'playing';
+
+        // Notify all players
+        $this->send([
+            'type' => 'game_started',
+            'room_id' => $roomId,
+            'first_card' => $room['game_data']['last_card'],
+            'current_turn' => $room['game_data']['current_turn']
+        ]);
+
+        $this->logger->info("Game started", [
+            'room_id' => $roomId,
+            'player_count' => count($room['players'])
         ]);
     }
 
@@ -602,43 +628,41 @@ class GameServer
      */
     private function handleCreateRoom(array $data): void
     {
-        if (!isset($data['room_id']) || !isset($data['room_data'])) {
-            $this->logger->warning("Invalid create_room data");
+        if (!isset($data['room_data'])) {
+            $this->logger->error("Invalid create room request");
             return;
         }
 
-        $roomId = $data['room_id'];
         $roomData = $data['room_data'];
+        $roomId = $roomData['room_id'];
 
-        $this->logger->info("Creating room", [
-            'room_id' => $roomId,
-            'name' => $roomData['name'] ?? 'Unknown'
-        ]);
-
-        // Store room locally
+        // Create room in memory
         $this->rooms[$roomId] = [
-            'name' => $roomData['name'] ?? 'Room ' . $roomId,
-            'status' => $roomData['status'] ?? 'waiting',
-            'max_players' => $roomData['max_players'] ?? 4,
+            'id' => $roomId,
+            'status' => 'waiting',
+            'max_players' => $roomData['max_players'],
             'players' => [],
-            'current_players' => 0,
-            'is_private' => $roomData['is_private'] ?? false,
-            'private_code' => $roomData['private_code'] ?? null,
-            'creator_id' => $roomData['creator_id'] ?? null,
-            'creator_username' => $roomData['creator_username'] ?? null,
-            'last_updated' => time(),
+            'is_private' => $roomData['is_private'],
+            'private_code' => $roomData['private_code'],
+            'created_at' => time(),
             'game_data' => [
                 'deck' => GameUtilities::createNewDeck(),
-                'current_player' => null,
-                'status' => 'waiting'
+                'current_turn' => null,
+                'last_card' => null,
+                'direction' => 1
             ]
         ];
 
-        // Acknowledge room creation
-        $this->sendMessage([
+        // Acknowledge room creation to WebSocket server
+        $this->send([
             'type' => 'room_created_ack',
             'room_id' => $roomId,
-            'server_id' => $this->serverId
+            'status' => 'success'
+        ]);
+
+        $this->logger->info("Room created", [
+            'room_id' => $roomId,
+            'max_players' => $roomData['max_players']
         ]);
     }
 
@@ -647,50 +671,73 @@ class GameServer
      */
     private function handleAddPlayerToRoom(array $data): void
     {
-        if (!isset($data['room_id']) || !isset($data['player_id']) || !isset($data['player_fd']) || !isset($data['username'])) {
-            $this->logger->warning("Invalid add_player_to_room data");
+        if (!isset($data['room_id']) || !isset($data['player_id'])) {
+            $this->logger->error("Invalid add player request");
             return;
         }
 
         $roomId = $data['room_id'];
         $playerId = $data['player_id'];
-        $playerFd = $data['player_fd'];
-        $username = $data['username'];
 
         if (!isset($this->rooms[$roomId])) {
-            $this->logger->warning("Room not found for adding player", ['room_id' => $roomId]);
+            $this->logger->error("Room not found", ['room_id' => $roomId]);
             return;
         }
 
-        $this->logger->info("Adding player to room", [
-            'room_id' => $roomId,
-            'player_id' => $playerId,
-            'username' => $username
-        ]);
-
-        // Add player to room
-        if (!in_array($playerId, $this->rooms[$roomId]['players'])) {
-            $this->rooms[$roomId]['players'][] = $playerId;
-            $this->rooms[$roomId]['current_players'] = count($this->rooms[$roomId]['players']);
-            $this->rooms[$roomId]['last_updated'] = time();
+        $room = &$this->rooms[$roomId];
+        if (count($room['players']) >= $room['max_players']) {
+            $this->logger->error("Room is full", ['room_id' => $roomId]);
+            return;
         }
 
-        // Store player data
-        $this->players[$playerId] = [
-            'user_id' => $playerId,
-            'username' => $username,
-            'room_id' => $roomId,
-            'fd' => $playerFd,
-            'status' => 'not_ready',
-            'last_activity' => time()
+        // Add player to room
+        $room['players'][$playerId] = [
+            'id' => $playerId,
+            'cards' => [],
+            'ready' => false,
+            'joined_at' => time()
         ];
 
-        // Acknowledge player added
-        $this->sendMessage([
+        // Acknowledge player addition
+        $this->send([
             'type' => 'player_added_to_room_ack',
             'room_id' => $roomId,
             'player_id' => $playerId,
-            'server_id' => $this->serverId
+            'status' => 'success'
+        ]);
+
+        // Broadcast room update to all players
+        $this->broadcastRoomUpdate($roomId);
+
+        $this->logger->info("Player added to room", [
+            'room_id' => $roomId,
+            'player_id' => $playerId,
+            'player_count' => count($room['players'])
+        ]);
+    }
+
+    private function broadcastRoomUpdate(string $roomId): void
+    {
+        if (!isset($this->rooms[$roomId])) {
+            return;
+        }
+
+        $room = $this->rooms[$roomId];
+        $players = array_map(function($player) {
+            return [
+                'id' => $player['id'],
+                'ready' => $player['ready'],
+                'card_count' => count($player['cards'])
+            ];
+        }, $room['players']);
+
+        $this->send([
+            'type' => 'room_update',
+            'room_id' => $roomId,
+            'status' => $room['status'],
+            'players' => $players,
+            'max_players' => $room['max_players'],
+            'is_private' => $room['is_private']
         ]);
     }
 }
