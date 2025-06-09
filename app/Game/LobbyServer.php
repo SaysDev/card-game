@@ -602,7 +602,7 @@ class LobbyServer
     {
         try {
             if (!isset($message['data'])) {
-                throw new Exception("Missing data parameter");
+                throw new Exception("Missing data in message");
             }
 
             $data = $message['data'];
@@ -610,13 +610,12 @@ class LobbyServer
                 throw new Exception("Missing required parameters");
             }
 
-            // Get client info
             $client = $this->clientsTable->get($fd);
             if (!$client || !$client['authenticated']) {
                 throw new Exception("Client not authenticated");
             }
 
-            // Find least loaded game server
+            // Get a game server
             $gameServer = $this->findLeastLoadedGameServer();
             if (!$gameServer) {
                 throw new Exception("No available game servers");
@@ -638,7 +637,7 @@ class LobbyServer
             }
 
             if (!isset($response['type']) || $response['type'] !== 'create_room_success') {
-                throw new Exception("Failed to create room: " . ($response['message'] ?? 'Unknown error'));
+                throw new Exception($response['message'] ?? "Failed to create room");
             }
 
             // Store room information
@@ -655,27 +654,23 @@ class LobbyServer
                 'game_server_port' => $gameServer['port']
             ]);
 
+            // Update client's room_id
+            $this->clientsTable->set($fd, [
+                'room_id' => $response['room_id']
+            ]);
+
             // Send success response to client
             $server->push($fd, json_encode([
                 'type' => 'matchmaking_success',
-                'data' => [
-                    'room_id' => $response['room_id'],
-                    'game_type' => $response['game_type'],
-                    'max_players' => $response['max_players'],
-                    'server' => [
-                        'ip' => $gameServer['ip'],
-                        'port' => $gameServer['port']
-                    ]
-                ]
+                'room_id' => $response['room_id'],
+                'game_type' => $data['game_type'],
+                'max_players' => $data['size']
             ]));
 
             $this->logger->info("Player {$client['user_id']} ({$client['username']}) joined matchmaking for {$data['game_type']}");
         } catch (Exception $e) {
             $this->logger->error("Error in matchmaking join: " . $e->getMessage());
-            $server->push($fd, json_encode([
-                'type' => 'error',
-                'message' => $e->getMessage()
-            ]));
+            $this->sendWsError($server, $fd, $e->getMessage());
         }
     }
 
@@ -1282,6 +1277,14 @@ class LobbyServer
         }
     }
 
+    private function sendError(\OpenSwoole\WebSocket\Server $server, int $fd, string $message): void
+    {
+        $server->push($fd, json_encode([
+            'type' => MessageType::ERROR->value,
+            'message' => $message
+        ]));
+    }
+
     private function handleSetReady(\OpenSwoole\WebSocket\Server $server, int $fd, array $message): void
     {
         try {
@@ -1326,11 +1329,11 @@ class LobbyServer
             ]);
 
             // Send confirmation to the player
-            $this->sendResponse($server, $fd, [
+            $server->push($fd, json_encode([
                 'type' => MessageType::SET_READY->value,
                 'success' => true,
                 'ready' => $ready
-            ]);
+            ]));
 
             $this->logger->info("Player {$userId} ({$username}) set ready status to " . ($ready ? 'ready' : 'not ready') . " in room {$roomId}");
 
@@ -1348,7 +1351,7 @@ class LobbyServer
             }
         } catch (Exception $e) {
             $this->logger->error("Error handling set ready: " . $e->getMessage());
-            $this->sendError($server, $fd, $e->getMessage());
+            $this->sendWsError($server, $fd, $e->getMessage());
         }
     }
 
