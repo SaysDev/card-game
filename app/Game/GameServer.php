@@ -128,7 +128,14 @@ class GameServer
                 'open_length_check' => true,
                 'package_length_type' => 'N',
                 'package_length_offset' => 0,
-                'package_body_offset' => 4
+                'package_body_offset' => 4,
+                'package_length_func' => function($data) {
+                    if (strlen($data) < 4) {
+                        return 0;
+                    }
+                    $length = unpack('N', substr($data, 0, 4))[1];
+                    return $length + 4;
+                }
             ]);
 
             // Register event handlers
@@ -197,27 +204,26 @@ class GameServer
     public function onReceive(\OpenSwoole\Server $server, int $fd, int $reactorId, string $data): void
     {
         try {
-            // Check if the message has a valid length prefix
+            $this->logger->debug("Raw data received from client {$fd}: " . bin2hex($data));
+            $this->logger->debug("Data length: " . strlen($data));
+
+            // Extract the message body (skip the 4-byte length prefix)
             if (strlen($data) < 4) {
                 $this->logger->warning("Message too short from client {$fd}");
                 return;
             }
 
-            // Extract length prefix
             $length = unpack('N', substr($data, 0, 4))[1];
+            $messageBody = substr($data, 4);
             
-            // Extract message
-            $messageData = substr($data, 4);
-            
-            // Validate message length
-            if (strlen($messageData) !== $length) {
-                $this->logger->warning("Message length mismatch from client {$fd}: expected {$length}, got " . strlen($messageData));
-                return;
-            }
+            $this->logger->debug("Message length from prefix: " . $length);
+            $this->logger->debug("Message body: " . $messageBody);
 
-            $message = json_decode($messageData, true);
+            // Decode the message body
+            $message = json_decode($messageBody, true);
             if (!$message || !isset($message['type'])) {
-                $this->logger->warning("Invalid message format from client {$fd}");
+                $this->logger->warning("Invalid message format from client {$fd}: " . $messageBody);
+                $this->logger->warning("JSON decode error: " . json_last_error_msg());
                 return;
             }
 
@@ -235,6 +241,9 @@ class GameServer
                     break;
                 case MessageType::GAME_ACTION->value:
                     $this->handleGameAction($server, $fd, $message);
+                    break;
+                case MessageType::MATCHMAKING_JOIN->value:
+                    $this->handleMatchmakingJoin($server, $fd, $message);
                     break;
                 case 'create_room':
                     $this->handleCreateRoom($server, $fd, $message);
@@ -301,10 +310,22 @@ class GameServer
     {
         try {
             $json = json_encode($data);
+            if ($json === false) {
+                $this->logger->error("Failed to encode response: " . json_last_error_msg());
+                return;
+            }
+
+            // Add length prefix (4 bytes)
             $message = pack('N', strlen($json)) . $json;
-            $server->send($fd, $message);
+            
+            $this->logger->debug("Sending response to client {$fd}: " . $json);
+            
+            if (!$server->send($fd, $message)) {
+                $this->logger->error("Failed to send response to client {$fd}");
+            }
         } catch (Exception $e) {
             $this->logger->error("Error sending response to client {$fd}: " . $e->getMessage());
+            $this->logger->error("Stack trace: " . $e->getTraceAsString());
         }
     }
 
@@ -385,39 +406,19 @@ class GameServer
         try {
             $this->logger->info("Connecting to Lobby Server at {$this->lobbyHost}:{$this->lobbyPort}");
             
-            $this->lobbyConnection = new \OpenSwoole\Client(SWOOLE_SOCK_TCP);
-            $this->lobbyConnection->set([
-                'open_length_check' => true,
-                'package_length_type' => 'N',
-                'package_length_offset' => 0,
-                'package_body_offset' => 4,
-                'package_max_length' => 8 * 1024 * 1024, // 8MB
-                'socket_buffer_size' => 8 * 1024 * 1024, // 8MB
-                'buffer_output_size' => 8 * 1024 * 1024, // 8MB
-                'tcp_nodelay' => true,
-                'tcp_keepalive' => true
-            ]);
-
-            if (!$this->lobbyConnection->connect($this->lobbyHost, $this->lobbyPort, 5)) {
-                $this->logger->error("Failed to connect to Lobby Server: " . socket_strerror($this->lobbyConnection->errCode));
-                return;
-            }
-
-            $this->logger->info("Connected to Lobby Server successfully");
-            
             // Register with Lobby Server
             $this->registerWithLobby();
 
             // Start ping timer
             \OpenSwoole\Timer::tick(30000, function() {
-                if ($this->lobbyConnection && $this->lobbyConnection->isConnected() && $this->isRegistered) {
+                if ($this->isRegistered) {
                     $this->sendPingToLobby();
                 }
             });
             
             // Start status update timer
-            \OpenSwoole\Timer::tick(5000, function() {
-                if ($this->lobbyConnection && $this->lobbyConnection->isConnected() && $this->isRegistered) {
+            \OpenSwoole\Timer::tick(30000, function() {
+                if ($this->isRegistered) {
                     $this->sendStatusUpdateToLobby();
                 }
             });
@@ -431,7 +432,7 @@ class GameServer
     {
         try {
             $message = [
-                'type' => MessageType::REGISTER->value,
+                'type' => 'register',
                 'server_id' => $this->serverId,
                 'ip' => $this->host,
                 'port' => $this->port,
@@ -470,12 +471,15 @@ class GameServer
 
             $packed = pack('N', strlen($json)) . $json;
             $this->logger->debug("Sending registration message: " . $json);
+            $this->logger->debug("Message length: " . strlen($packed));
             
             if (!$client->send($packed)) {
                 $this->logger->error("Failed to send registration message: " . socket_strerror($client->errCode));
                 $client->close();
                 return false;
             }
+
+            $this->logger->debug("Registration message sent successfully");
 
             // Receive response
             $response = $this->receiveFromLobby($client);
@@ -504,38 +508,34 @@ class GameServer
     private function receiveFromLobby(\OpenSwoole\Client $client): ?array
     {
         try {
-            // First receive 4-byte length prefix
-            $lengthData = $client->recv(4, 1);
-            if ($lengthData === false || strlen($lengthData) !== 4) {
-                $this->logger->error("Failed to receive length prefix");
+            $this->logger->debug("Waiting for response from Lobby Server...");
+            
+            // Receive the complete message (OpenSwoole will handle the length prefix)
+            $data = $client->recv(1);
+            if ($data === false) {
+                $this->logger->error("Failed to receive message from Lobby Server");
                 return null;
             }
 
-            // Unpack length
-            $length = unpack('N', $lengthData)[1];
-            if ($length <= 0 || $length > 8 * 1024 * 1024) {
-                $this->logger->error("Invalid message length: {$length}");
-                return null;
-            }
-
-            // Receive message body
-            $data = $client->recv($length, 1);
-            if ($data === false || strlen($data) !== $length) {
-                $this->logger->error("Failed to receive message body");
-                return null;
-            }
-
+            // Log the raw message for debugging
+            $this->logger->debug("Raw message received: " . bin2hex($data));
+            
+            // Extract the JSON part (skip the 4-byte length prefix)
+            $json = substr($data, 4);
+            
             // Decode JSON
-            $message = json_decode($data, true);
+            $message = json_decode($json, true);
             if ($message === null) {
                 $this->logger->error("Failed to decode JSON: " . json_last_error_msg());
+                $this->logger->error("Raw message: " . $json);
                 return null;
             }
 
-            $this->logger->debug("Received from Lobby Server: " . json_encode($message));
+            $this->logger->debug("Decoded message: " . json_encode($message));
             return $message;
         } catch (Exception $e) {
             $this->logger->error("Error receiving from Lobby Server: " . $e->getMessage());
+            $this->logger->error("Stack trace: " . $e->getTraceAsString());
             return null;
         }
     }
@@ -550,7 +550,11 @@ class GameServer
                 'package_length_type' => 'N',
                 'package_length_offset' => 0,
                 'package_body_offset' => 4,
-                'package_max_length' => 8 * 1024 * 1024
+                'package_max_length' => 8 * 1024 * 1024,
+                'socket_buffer_size' => 8 * 1024 * 1024,
+                'buffer_output_size' => 8 * 1024 * 1024,
+                'tcp_nodelay' => true,
+                'tcp_keepalive' => true
             ]);
 
             if (!$client->connect($this->lobbyHost, $this->lobbyPort, 5)) {
@@ -569,6 +573,8 @@ class GameServer
             $message = pack('N', strlen($json)) . $json;
             
             $this->logger->debug("Sending to Lobby Server: " . $json);
+            $this->logger->debug("Message length: " . strlen($message));
+            
             $result = $client->send($message);
             
             if ($result === false) {
@@ -577,7 +583,89 @@ class GameServer
                 return false;
             }
 
+            // Wait for response
+            $response = $this->receiveFromLobby($client);
             $client->close();
+
+            if (!$response) {
+                $this->logger->error("No response from Lobby Server");
+                return false;
+            }
+
+            if (isset($response['type']) && $response['type'] === 'error') {
+                $this->logger->error("Lobby Server error: " . ($response['message'] ?? 'Unknown error'));
+                return false;
+            }
+
+            return true;
+        } catch (Exception $e) {
+            $this->logger->error("Error sending to Lobby Server: " . $e->getMessage());
+            $this->logger->error("Stack trace: " . $e->getTraceAsString());
+            return false;
+        }
+    }
+
+    private function sendPingToLobby(): bool
+    {
+        try {
+            $message = [
+                'type' => MessageType::PING->value,
+                'server_id' => $this->serverId,
+                'timestamp' => microtime(true)
+            ];
+
+            // Create a new connection for each message
+            $client = new \OpenSwoole\Client(SWOOLE_SOCK_TCP);
+            $client->set([
+                'open_length_check' => true,
+                'package_length_type' => 'N',
+                'package_length_offset' => 0,
+                'package_body_offset' => 4,
+                'package_max_length' => 8 * 1024 * 1024,
+                'socket_buffer_size' => 8 * 1024 * 1024,
+                'buffer_output_size' => 8 * 1024 * 1024,
+                'tcp_nodelay' => true,
+                'tcp_keepalive' => true
+            ]);
+
+            if (!$client->connect($this->lobbyHost, $this->lobbyPort, 5)) {
+                $this->logger->error("Failed to connect to Lobby Server");
+                return false;
+            }
+
+            $json = json_encode($message);
+            if ($json === false) {
+                $this->logger->error("Failed to encode message: " . json_last_error_msg());
+                $client->close();
+                return false;
+            }
+
+            // Add length prefix (4 bytes)
+            $packed = pack('N', strlen($json)) . $json;
+            
+            $this->logger->debug("Sending ping to Lobby Server: " . $json);
+            $this->logger->debug("Message length: " . strlen($packed));
+            
+            if (!$client->send($packed)) {
+                $this->logger->error("Failed to send message to Lobby Server");
+                $client->close();
+                return false;
+            }
+
+            // Wait for response
+            $response = $this->receiveFromLobby($client);
+            $client->close();
+
+            if (!$response) {
+                $this->logger->error("No response from Lobby Server");
+                return false;
+            }
+
+            if (isset($response['type']) && $response['type'] === 'error') {
+                $this->logger->error("Lobby Server error: " . ($response['message'] ?? 'Unknown error'));
+                return false;
+            }
+
             return true;
         } catch (Exception $e) {
             $this->logger->error("Error sending to Lobby Server: " . $e->getMessage());
@@ -585,27 +673,76 @@ class GameServer
         }
     }
 
-    private function sendPingToLobby(): bool
-    {
-        $message = [
-            'type' => MessageType::PING->value,
-            'server_id' => $this->serverId,
-            'timestamp' => microtime(true)
-        ];
-        return $this->sendToLobby($message);
-    }
-
     private function sendStatusUpdateToLobby(): bool
     {
-        $message = [
-            'type' => 'status_update',
-            'server_id' => $this->serverId,
-            'load' => $this->calculateServerLoad(),
-            'rooms_count' => count($this->rooms),
-            'players_count' => count($this->clients),
-            'timestamp' => microtime(true)
-        ];
-        return $this->sendToLobby($message);
+        try {
+            $message = [
+                'type' => 'status_update',
+                'server_id' => $this->serverId,
+                'status' => 'active',
+                'load' => $this->calculateServerLoad(),
+                'rooms_count' => count($this->rooms),
+                'players_count' => count($this->clients),
+                'timestamp' => microtime(true)
+            ];
+
+            // Create a new connection for each message
+            $client = new \OpenSwoole\Client(SWOOLE_SOCK_TCP);
+            $client->set([
+                'open_length_check' => true,
+                'package_length_type' => 'N',
+                'package_length_offset' => 0,
+                'package_body_offset' => 4,
+                'package_max_length' => 8 * 1024 * 1024,
+                'socket_buffer_size' => 8 * 1024 * 1024,
+                'buffer_output_size' => 8 * 1024 * 1024,
+                'tcp_nodelay' => true,
+                'tcp_keepalive' => true
+            ]);
+
+            if (!$client->connect($this->lobbyHost, $this->lobbyPort, 5)) {
+                $this->logger->error("Failed to connect to Lobby Server");
+                return false;
+            }
+
+            $json = json_encode($message);
+            if ($json === false) {
+                $this->logger->error("Failed to encode message: " . json_last_error_msg());
+                $client->close();
+                return false;
+            }
+
+            // Add length prefix (4 bytes)
+            $packed = pack('N', strlen($json)) . $json;
+            
+            $this->logger->debug("Sending to Lobby Server: " . $json);
+            $this->logger->debug("Message length: " . strlen($packed));
+            
+            if (!$client->send($packed)) {
+                $this->logger->error("Failed to send message to Lobby Server");
+                $client->close();
+                return false;
+            }
+
+            // Wait for response
+            $response = $this->receiveFromLobby($client);
+            $client->close();
+
+            if (!$response) {
+                $this->logger->error("No response from Lobby Server");
+                return false;
+            }
+
+            if (isset($response['type']) && $response['type'] === 'error') {
+                $this->logger->error("Lobby Server error: " . ($response['message'] ?? 'Unknown error'));
+                return false;
+            }
+
+            return true;
+        } catch (Exception $e) {
+            $this->logger->error("Error sending to Lobby Server: " . $e->getMessage());
+            return false;
+        }
     }
 
     private function calculateServerLoad(): int
@@ -982,7 +1119,7 @@ class GameServer
 
             // Send response to the client
             $this->sendResponse($server, $fd, [
-                'type' => 'room_created',
+                'type' => 'create_room_success',
                 'room_id' => $roomId,
                 'game_type' => $gameType,
                 'max_players' => $maxPlayers
@@ -991,7 +1128,10 @@ class GameServer
             $this->logger->info("Room {$roomId} created for game type {$gameType} with max {$maxPlayers} players");
         } catch (Exception $e) {
             $this->logger->error("Error creating room: " . $e->getMessage());
-            $this->sendError($server, $fd, $e->getMessage());
+            $this->sendResponse($server, $fd, [
+                'type' => 'create_room_error',
+                'message' => $e->getMessage()
+            ]);
         }
     }
 
@@ -1107,6 +1247,60 @@ class GameServer
             $this->logger->info("Game started in room {$roomId}");
         } catch (Exception $e) {
             $this->logger->error("Error starting game: " . $e->getMessage());
+        }
+    }
+
+    private function handleMatchmakingJoin(\OpenSwoole\Server $server, int $fd, array $message): void
+    {
+        try {
+            if (!isset($message['user_id']) || !isset($message['username']) || !isset($message['game_type']) || !isset($message['size'])) {
+                throw new Exception("Missing required matchmaking parameters");
+            }
+
+            $userId = $message['user_id'];
+            $username = $message['username'];
+            $gameType = $message['game_type'];
+            $size = $message['size'];
+            $isPrivate = $message['is_private'] ?? false;
+            $privateCode = $message['private_code'] ?? '';
+
+            // Check if there's an existing room that matches the criteria
+            $existingRoom = null;
+            foreach ($this->roomsTable as $roomId => $room) {
+                if ($room['game_type'] === $gameType && 
+                    $room['status'] === 'waiting' && 
+                    $room['player_count'] < $room['max_players'] &&
+                    (!$isPrivate || $room['private_code'] === $privateCode)) {
+                    $existingRoom = $room;
+                    break;
+                }
+            }
+
+            if ($existingRoom) {
+                // Join existing room
+                $this->handleJoinRoom($server, $fd, [
+                    'type' => 'join_room',
+                    'room_id' => $existingRoom['id'],
+                    'user_id' => $userId,
+                    'username' => $username
+                ]);
+            } else {
+                // Create new room
+                $this->handleCreateRoom($server, $fd, [
+                    'type' => 'create_room',
+                    'game_type' => $gameType,
+                    'max_players' => $size,
+                    'user_id' => $userId,
+                    'username' => $username,
+                    'is_private' => $isPrivate,
+                    'private_code' => $privateCode
+                ]);
+            }
+
+            $this->logger->info("Player {$userId} ({$username}) joined matchmaking for {$gameType}");
+        } catch (Exception $e) {
+            $this->logger->error("Error in matchmaking join: " . $e->getMessage());
+            $this->sendError($server, $fd, $e->getMessage());
         }
     }
 }

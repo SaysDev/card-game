@@ -273,60 +273,57 @@ class GameServerManager
 
     public function startLobbyServer(): bool
     {
-        $this->logger->info("Uruchamianie serwera lobby...");
-        
-        // Najpierw zatrzymaj wszystkie procesy na wymaganych portach
-        $this->killProcessesOnPorts([5555, 5556]);
-        
-        // Poczekaj chwilę, aby porty zostały zwolnione
-        usleep(500000); // 500ms
-        
-        // Sprawdź, czy porty są wolne
-        $ports = [5555, 5556];
-        foreach ($ports as $port) {
-            if ($this->isPortInUse($port)) {
-                $this->logger->error("Port {$port} jest nadal zajęty");
+        try {
+            $this->logger->info("Starting Lobby Server...");
+            
+            // Kill any processes on our ports
+            $this->killProcessesOnPorts([$this->lobbyPort, $this->lobbyTcpPort]);
+            
+            // Clean up old ready files
+            $readyFiles = [
+                storage_path('logs/lobby_server.ready'),
+                storage_path('logs/lobby.ready')
+            ];
+            
+            foreach ($readyFiles as $file) {
+                if (file_exists($file)) {
+                    unlink($file);
+                }
+            }
+            
+            // Start the lobby server process
+            $process = new Process([
+                'php',
+                'artisan',
+                'game:start-lobby'
+            ]);
+            
+            $process->setTimeout(null);
+            $process->start();
+            
+            if (!$process->isRunning()) {
+                $this->logger->error("Failed to start Lobby Server");
                 return false;
             }
-        }
 
-        try {
-            // Clean up old ready file
-            $readyFile = storage_path('logs/lobby_server.ready');
-            if (file_exists($readyFile)) {
-                unlink($readyFile);
-            }
+            $this->lobbyPid = $process->getPid();
+            $this->childPids[] = $process->getPid();
             
-            // Clean up old PID file
-            $pidFile = storage_path('logs/lobby_server.pid');
-            if (file_exists($pidFile)) {
-                unlink($pidFile);
-            }
+            // Store PID in file
+            $pidsData = [
+                'lobby' => $this->lobbyPid,
+                'started_at' => time()
+            ];
             
-            // Start lobby server in background
-            $command = sprintf(
-                'php %s game:start-lobby > %s 2>&1 & echo $!',
-                base_path('artisan'),
-                storage_path('logs/lobby_server.log')
+            file_put_contents(
+                storage_path('logs/game_manager_pids.json'),
+                json_encode($pidsData)
             );
             
-            $pid = exec($command);
-            
-            if (!$pid) {
-                $this->logger->error("Nie udało się uruchomić serwera lobby");
-                return false;
-            }
-            
-            $this->lobbyPid = (int)$pid;
-            $this->logger->info("Serwer lobby uruchomiony (PID: {$this->lobbyPid})");
-            
-            // Save PID to file
-            file_put_contents($pidFile, $this->lobbyPid);
-            chmod($pidFile, 0666);
-            
+            $this->logger->info("Lobby Server started (PID: {$this->lobbyPid})");
             return true;
         } catch (Exception $e) {
-            $this->logger->error("Błąd podczas uruchamiania serwera lobby: " . $e->getMessage());
+            $this->logger->error("Error starting Lobby Server: " . $e->getMessage());
             return false;
         }
     }
