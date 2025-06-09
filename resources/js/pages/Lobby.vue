@@ -6,6 +6,26 @@ import { useToast } from '@/components/ui/toast';
 import GameBoard from '@/components/game/GameBoard.vue';
 import { webSocketService } from '@/Services/WebSocketService';
 
+interface Player {
+  user_id: number;
+  username: string;
+  status: string;
+  ready: boolean;
+  score: number;
+  cards_count: number;
+}
+
+interface GameState {
+  roomId: string | null;
+  roomName: string | null;
+  players: Player[];
+  hand: any[];
+  playArea: any[];
+  lastCard: any | null;
+  deckCount: number;
+  isYourTurn: boolean;
+}
+
 const { user } = useAuth();
 console.log(user);
 const { toast } = useToast();
@@ -18,138 +38,149 @@ const joined = ref(false);
 const gameStarted = ref(false);
 const onlineCount = ref(0);
 
-// const playerReady = computed({
-//   get: () => {
-//     // Safely access user ID with optional chaining and type checking
-//     const userId = user.value?.id;
-//     if (typeof userId === 'undefined' || userId === null) return false;
+const gameState = ref<GameState>({
+  roomId: null,
+  roomName: null,
+  players: [],
+  hand: [],
+  playArea: [],
+  lastCard: null,
+  deckCount: 0,
+  isYourTurn: false
+});
+
+const playerReady = computed({
+  get: () => {
+    const userId = user.value?.id;
+    if (typeof userId === 'undefined' || userId === null) return false;
     
-//     const myPlayer = gameState.players.find(player => player.user_id === userId);
-//     return myPlayer?.ready === true || myPlayer?.status === 'ready' || false;
-//   },
-//   set: (value) => {
-//     WebSocketService.setReadyStatus(value);
-//   }
-// });
+    const myPlayer = gameState.value.players.find(player => player.user_id === userId);
+    return myPlayer?.ready === true || myPlayer?.status === 'ready' || false;
+  },
+  set: (value) => {
+    webSocketService.send({
+      type: 'set_ready',
+      data: {
+        ready: value
+      }
+    });
+  }
+});
 
-// function joinQueue() {
-//   WebSocketService.joinMatchmaking(selectedSize.value, isPrivate.value, isPrivate.value ? privateCode.value : null);
-// }
+function toggleReady() {
+  webSocketService.send({
+    type: 'set_ready',
+    data: {
+      ready: !playerReady.value
+    }
+  });
+}
 
-// function toggleReady() {
-//   WebSocketService.setReadyStatus(!playerReady.value);
-// }
-
-// WebSocketService.on('room_joined', (data: any) => {
-//   joined.value = true;
-//   gameState.roomId = data.room_id;
-//   gameState.roomName = data.room_name;
-  
-//   console.log('Room joined data:', data);
-  
-//   if (data.players && Array.isArray(data.players)) {
-//     gameState.players = data.players.map((p: any) => {
-//       // Ensure we have valid user_id and username
-//       const userId = p.user_id || p.id || 0;
-//       const username = p.username || p.name || 'Gracz';
-//       const status = p.status || 'not_ready';
-//       const ready = p.ready || status === 'ready';
-      
-//       return {
-//         user_id: userId,
-//         username: username,
-//         status: status,
-//         ready: ready,
-//         score: p.score ?? 0,
-//         cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-//       };
-//     });
-//   }
-// });
-
-// WebSocketService.on('player_status_changed', (data: { player_id: number; status: string; ready: boolean; }) => {
-//   const playerIndex = gameState.players.findIndex(p => p.user_id === data.player_id);
-//   if (playerIndex !== -1) {
-//     gameState.players[playerIndex].status = data.status;
-//     gameState.players[playerIndex].ready = data.ready;
-//   }
-// });
-
-// WebSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
-//   const myId = user.value?.id;
-//   const playerIndex = gameState.players.findIndex(p => p.user_id === myId);
-//   if (playerIndex !== -1) {
-//     gameState.players[playerIndex].status = data.status;
-//     gameState.players[playerIndex].ready = data.ready;
-//   }
-// });
-
-// WebSocketService.on('game_started', () => {
-//   gameStarted.value = true;
-//   toast({
-//     title: 'Gra rozpoczęta',
-//     description: 'Gra została rozpoczęta!',
-//   });
-// });
-
-// WebSocketService.on('online_count', (count: number) => {
-//   onlineCount.value = count;
-// });
-
-// WebSocketService.on('room_full', () => {
-//   toast({ title: 'Pokój pełny', description: 'Wybrany pokój jest już pełny.', variant: 'destructive' });
-//   joined.value = false;
-//   gameStarted.value = false;
-//   gameState.roomId = null;
-//   gameState.roomName = null;
-//   gameState.players = [];
-// });
-
-// WebSocketService.on('room_not_found', () => {
-//   toast({ title: 'Nie znaleziono pokoju', description: 'Pokój nie istnieje lub został zamknięty.', variant: 'destructive' });
-//   joined.value = false;
-//   gameStarted.value = false;
-//   gameState.roomId = null;
-//   gameState.roomName = null;
-//   gameState.players = [];
-// });
-
-// WebSocketService.on('server_error', (err: { message: string }) => {
-//   toast({ title: 'Błąd serwera', description: err.message, variant: 'destructive' });
-//   joined.value = false;
-//   gameStarted.value = false;
-//   gameState.roomId = null;
-//   gameState.roomName = null;
-//   gameState.players = [];
-// });
-
-// function leaveRoom() {
-//   WebSocketService.leaveRoom();
-//   joined.value = false;
-//   gameStarted.value = false;
-//   gameState.roomId = null;
-//   gameState.roomName = null;
-//   gameState.players = [];
-// }
+function leaveRoom() {
+  webSocketService.send({
+    type: 'leave_room',
+    data: {
+      room_id: gameState.value.roomId
+    }
+  });
+  joined.value = false;
+  gameStarted.value = false;
+  gameState.value.roomId = null;
+  gameState.value.roomName = null;
+  gameState.value.players = [];
+}
 
 function joinQueue() {
   webSocketService.send({
     type: 'matchmaking_join',
     data: {
+      user_id: user.value?.id,
+      username: user.value?.username,
       game_type: 'card_game',
       size: selectedSize.value,
-      isPrivate: isPrivate.value,
-      privateCode: privateCode.value
+      is_private: isPrivate.value,
+      private_code: privateCode.value
     }
   });
-
-  // webSocketService.send({
-  //   type: 'test',
-  //   data: {
-  //     message: 'Hello from client'
-  //   }
-  // });
 }
+
+// Add WebSocket event handlers
+webSocketService.on('matchmaking_success', (data) => {
+  joined.value = true;
+  gameState.value.roomId = data.room_id;
+  gameState.value.roomName = data.room_name;
+  
+  if (data.players && Array.isArray(data.players)) {
+    gameState.value.players = data.players.map((p: any): Player => ({
+      user_id: p.user_id || p.id || 0,
+      username: p.username || p.name || 'Gracz',
+      status: p.status || 'not_ready',
+      ready: p.ready || p.status === 'ready',
+      score: p.score ?? 0,
+      cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
+    }));
+  }
+});
+
+webSocketService.on('player_joined', (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    gameState.value.players.push({
+      user_id: data.player_id,
+      username: data.player_name,
+      status: 'not_ready',
+      ready: false,
+      score: 0,
+      cards_count: 0
+    });
+  }
+});
+
+webSocketService.on('player_left', (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    gameState.value.players = gameState.value.players.filter(p => p.user_id !== data.player_id);
+  }
+});
+
+webSocketService.on('room_update', (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    gameState.value.players = data.players.map((p: any): Player => ({
+      user_id: p.user_id || p.id || 0,
+      username: p.username || p.name || 'Gracz',
+      status: p.status || 'not_ready',
+      ready: p.ready || p.status === 'ready',
+      score: p.score ?? 0,
+      cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
+    }));
+  }
+});
+
+webSocketService.on('room_closed', (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    joined.value = false;
+    gameStarted.value = false;
+    gameState.value.roomId = null;
+    gameState.value.roomName = null;
+    gameState.value.players = [];
+    toast({ 
+      title: 'Pokój zamknięty', 
+      description: 'Pokój został zamknięty.', 
+      variant: 'destructive' 
+    });
+  }
+});
+
+webSocketService.on('error', (data) => {
+  toast({ 
+    title: 'Błąd', 
+    description: data.message || 'Wystąpił nieznany błąd', 
+    variant: 'destructive' 
+  });
+  joined.value = false;
+  gameStarted.value = false;
+  gameState.value.roomId = null;
+  gameState.value.roomName = null;
+  gameState.value.players = [];
+});
 
 onMounted(async () => await webSocketService.connect());
 </script>

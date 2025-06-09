@@ -33,4 +33,7 @@ enum MessageType: string
     case MATCHMAKING_LEAVE = 'matchmaking_leave';
     case MATCHMAKING_JOINED = 'matchmaking_joined';
     case LEAVE_ROOM = 'leave_room';
+    case SET_READY = 'set_ready';
+    case PLAYER_READY = 'player_ready';
+    case PLAYER_NOT_READY = 'player_not_ready';
 } 
