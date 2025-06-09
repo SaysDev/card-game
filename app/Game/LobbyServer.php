@@ -120,28 +120,38 @@ class LobbyServer
     private function initializeTables(): void
     {
         // Initialize clients table
-        $this->clientsTable = new \OpenSwoole\Table(1024);
-        $this->clientsTable->column('authenticated', \OpenSwoole\Table::TYPE_INT, 1);
-        $this->clientsTable->column('user_id', \OpenSwoole\Table::TYPE_INT, 8);
-        $this->clientsTable->column('username', \OpenSwoole\Table::TYPE_STRING, 64);
-        $this->clientsTable->column('room_id', \OpenSwoole\Table::TYPE_INT, 8);
-        $this->clientsTable->column('last_ping', \OpenSwoole\Table::TYPE_FLOAT, 8);
+        $this->clientsTable = new Table(1024);
+        $this->clientsTable->column('fd', Table::TYPE_INT);
+        $this->clientsTable->column('user_id', Table::TYPE_INT);
+        $this->clientsTable->column('username', Table::TYPE_STRING, 64);
+        $this->clientsTable->column('room_id', Table::TYPE_INT);
+        $this->clientsTable->column('authenticated', Table::TYPE_INT);
         $this->clientsTable->create();
 
         // Initialize rooms table
-        $this->roomsTable = new \OpenSwoole\Table(128);
-        $this->roomsTable->column('id', \OpenSwoole\Table::TYPE_INT);
-        $this->roomsTable->column('server_id', \OpenSwoole\Table::TYPE_INT);
-        $this->roomsTable->column('game_type', \OpenSwoole\Table::TYPE_STRING, 32);
-        $this->roomsTable->column('status', \OpenSwoole\Table::TYPE_STRING, 32);
-        $this->roomsTable->column('player_count', \OpenSwoole\Table::TYPE_INT);
-        $this->roomsTable->column('max_players', \OpenSwoole\Table::TYPE_INT);
-        $this->roomsTable->column('is_private', \OpenSwoole\Table::TYPE_INT, 1);
-        $this->roomsTable->column('private_code', \OpenSwoole\Table::TYPE_STRING, 32);
-        $this->roomsTable->column('created_at', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable = new Table(1024);
+        $this->roomsTable->column('id', Table::TYPE_INT);
+        $this->roomsTable->column('game_type', Table::TYPE_STRING, 32);
+        $this->roomsTable->column('status', Table::TYPE_STRING, 32);
+        $this->roomsTable->column('player_count', Table::TYPE_INT);
+        $this->roomsTable->column('max_players', Table::TYPE_INT);
+        $this->roomsTable->column('is_private', Table::TYPE_INT);
+        $this->roomsTable->column('private_code', Table::TYPE_STRING, 32);
+        $this->roomsTable->column('game_server_id', Table::TYPE_INT);
+        $this->roomsTable->column('game_server_ip', Table::TYPE_STRING, 32);
+        $this->roomsTable->column('game_server_port', Table::TYPE_INT);
         $this->roomsTable->create();
 
-        // Game servers table
+        // Initialize players table
+        $this->playersTable = new Table(1024);
+        $this->playersTable->column('id', Table::TYPE_INT);
+        $this->playersTable->column('user_id', Table::TYPE_INT);
+        $this->playersTable->column('username', Table::TYPE_STRING, 64);
+        $this->playersTable->column('room_id', Table::TYPE_INT);
+        $this->playersTable->column('status', Table::TYPE_STRING, 32);
+        $this->playersTable->create();
+
+        // Initialize game servers table
         $this->gameServersTable = new Table(1024);
         $this->gameServersTable->column('id', Table::TYPE_INT);
         $this->gameServersTable->column('ip', Table::TYPE_STRING, 64);
@@ -153,14 +163,6 @@ class LobbyServer
         $this->gameServersTable->column('last_ping', Table::TYPE_INT);
         $this->gameServersTable->column('last_update', Table::TYPE_INT);
         $this->gameServersTable->create();
-
-        // Players table
-        $this->playersTable = new Table(1024);
-        $this->playersTable->column('id', Table::TYPE_INT);
-        $this->playersTable->column('fd', Table::TYPE_INT);
-        $this->playersTable->column('room_id', Table::TYPE_INT);
-        $this->playersTable->column('server_id', Table::TYPE_INT);
-        $this->playersTable->create();
     }
 
     private function startWebSocketServer(): void
@@ -936,16 +938,15 @@ class LobbyServer
     {
         try {
             if (!isset($message['server_id']) || !isset($message['ip']) || !isset($message['port'])) {
-                throw new Exception("Missing required registration fields");
+                throw new Exception("Missing required registration parameters");
             }
 
             $serverId = $message['server_id'];
             $ip = $message['ip'];
             $port = $message['port'];
             $maxRooms = $message['max_rooms'] ?? 10;
-            $currentTime = time();
 
-            // Store game server info
+            // Store game server information
             $this->gameServersTable->set($serverId, [
                 'id' => $serverId,
                 'ip' => $ip,
@@ -954,20 +955,55 @@ class LobbyServer
                 'fd' => $fd,
                 'status' => 'active',
                 'load' => 0.0,
-                'last_ping' => $currentTime,
-                'last_update' => $currentTime
+                'last_ping' => time(),
+                'last_update' => time()
             ]);
+
+            // Prepare success response
+            $response = [
+                'type' => 'register_success',
+                'server_id' => $serverId,
+                'timestamp' => time()
+            ];
+
+            // Encode response to JSON
+            $json = json_encode($response);
+            if ($json === false) {
+                throw new Exception("Failed to encode response: " . json_last_error_msg());
+            }
+
+            // Add length prefix (4 bytes)
+            $message = pack('N', strlen($json)) . $json;
+            
+            $this->logger->debug("Sending registration response to game server {$serverId}: " . $json);
+            
+            // Send response
+            if (!$server->send($fd, $message)) {
+                throw new Exception("Failed to send response to game server");
+            }
 
             $this->logger->info("Game Server #{$serverId} registered at {$ip}:{$port}");
-
-            // Send success response
-            $this->sendTcpResponse($server, $fd, [
-                'type' => 'register_success',
-                'server_id' => $serverId
-            ]);
         } catch (Exception $e) {
             $this->logger->error("Error registering game server: " . $e->getMessage());
-            $this->sendTcpError($server, $fd, $e->getMessage());
+            
+            // Prepare error response
+            $response = [
+                'type' => 'error',
+                'message' => $e->getMessage()
+            ];
+
+            // Encode error response to JSON
+            $json = json_encode($response);
+            if ($json === false) {
+                $this->logger->error("Failed to encode error response: " . json_last_error_msg());
+                return;
+            }
+
+            // Add length prefix (4 bytes)
+            $message = pack('N', strlen($json)) . $json;
+            
+            // Send error response
+            $server->send($fd, $message);
         }
     }
 
@@ -1311,14 +1347,18 @@ class LobbyServer
             $userId = $client['user_id'];
             $username = $client['username'];
 
-            // Update player's ready status
-            $this->playersTable->set($userId, [
+            // Get current player data or initialize new player data
+            $player = $this->playersTable->get($userId) ?: [
                 'id' => $userId,
                 'user_id' => $userId,
                 'username' => $username,
                 'room_id' => $roomId,
-                'status' => $ready ? 'ready' : 'waiting'
-            ]);
+                'status' => 'waiting'
+            ];
+
+            // Update player's ready status
+            $player['status'] = $ready ? 'ready' : 'waiting';
+            $this->playersTable->set($userId, $player);
 
             // Notify other players in the room
             $this->notifyRoomPlayers($server, $roomId, [
@@ -1368,4 +1408,4 @@ class LobbyServer
             }
         }
     }
-} // End of LobbyServer class
+}

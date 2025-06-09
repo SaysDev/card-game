@@ -122,6 +122,26 @@ webSocketService.on('matchmaking_success', (data) => {
   }
 });
 
+webSocketService.on('player_ready', (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    const playerIndex = gameState.value.players.findIndex(p => p.user_id === data.player_id);
+    if (playerIndex !== -1) {
+      gameState.value.players[playerIndex].status = 'ready';
+      gameState.value.players[playerIndex].ready = true;
+    }
+  }
+});
+
+webSocketService.on('set_ready', (data) => {
+  if (data.success) {
+    const playerIndex = gameState.value.players.findIndex(p => p.user_id === user.value?.id);
+    if (playerIndex !== -1) {
+      gameState.value.players[playerIndex].status = data.ready ? 'ready' : 'not_ready';
+      gameState.value.players[playerIndex].ready = data.ready;
+    }
+  }
+});
+
 webSocketService.on('player_joined', (data) => {
   if (gameState.value.roomId === data.room_id) {
     gameState.value.players.push({
