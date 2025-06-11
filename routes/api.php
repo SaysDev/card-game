@@ -1,5 +1,5 @@
-// WebSocket Authentication Routes
+<?php // WebSocket Authentication Routes
 Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/ws/token', [WebSocketAuthController::class, 'getToken']);
-    Route::post('/ws/token/refresh', [WebSocketAuthController::class, 'refreshToken']);
+    Route::get('/api/ws/token', [WebSocketAuthController::class, 'getToken']);
+    Route::post('/api/ws/token/refresh', [WebSocketAuthController::class, 'refreshToken']);
 }); 

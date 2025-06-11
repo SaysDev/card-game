@@ -7,7 +7,7 @@ import PlayerInfo from '@/components/game/PlayerInfo.vue';
 import { webSocketService } from '@/Services/WebSocketService';
 import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/composables/useAuth';
-import { useWebSocket } from '@/composables/useWebSocket';
+import { MessageType } from "@/types/messageTypes";
 
 interface CardData {
     suit: 'hearts' | 'diamonds' | 'clubs' | 'spades';
@@ -71,24 +71,10 @@ const isConnecting = ref(false);
 const currentRoom = ref<string | null>(null);
 const gameMessage = ref<string>('');
 const { toast } = useToast();
-
-// Initialize WebSocket service
-// const {
-//     isConnected,
-//     authenticate,
-//     createRoom,
-//     joinRoom,
-//     leaveRoom: wsLeaveRoom,
-//     listRooms,
-//     playCard,
-//     drawCard,
-//     passTurn,
-//     on,
-//     off
-// } = useWebSocket();
-
-// Get auth info
 const { user, isLoggedIn } = useAuth();
+
+// Add room ID from URL or props
+const roomId = ref<string | null>(null);
 
 const getRankValue = (rankKey: string): number => {
     const rankMap: { [key: string]: number } = {
@@ -205,11 +191,11 @@ const handleCardSelection = (selectedCards: CardData[]) => {
   selectedMainPlayerCards.value = selectedCards;
 };
 
-const playSelectedCards = () => {
-  if (selectedMainPlayerCards.value.length === 0) {
+const handleCardPlay = () => {
+  if (selectedMainPlayerCards.value.length !== 1) {
     toast({
-      title: 'No cards selected',
-      description: 'Please select at least one card to play',
+      title: 'Invalid selection',
+      description: 'Please select exactly one card to play',
       variant: 'destructive'
     });
     return;
@@ -228,35 +214,47 @@ const playSelectedCards = () => {
     return;
   }
 
-  WebSocketService.playCard(cardIndex);
+  // Use send with game_action type instead of non-existent playCard method
+  webSocketService.send({
+    type: MessageType.GAME_ACTION,
+    action_type: 'play_card',
+    card_index: cardIndex
+  });
+  
   selectedMainPlayerCards.value = [];
 };
 
 function handleLeaveRoom() {
-  wsLeaveRoom();
-  gameState.roomId = null;
-  gameState.roomName = null;
-  gameState.players = [];
-  gameState.status = 'waiting';
-  gameState.hand = [];
-  gameState.isYourTurn = false;
-  gameState.playerReady = false;
+  // Use send with leave_room type instead of non-existent leaveRoom method
+  webSocketService.send({
+    type: MessageType.LEAVE_ROOM
+  });
   window.location.href = '/lobby';
 }
 
 onMounted(() => {
-    // Update player names from props
+    // Get room_id from URL query parameter if not provided in props
+    const urlParams = new URLSearchParams(window.location.search);
+    roomId.value = urlParams.get('room_id');
+    
+    if (roomId.value) {
+        // Set up event listeners for game events
+        setupGameEventListeners();
+    }
+    
+    // Initialize the game (temporary - for development)
+    dealCards();
     updatePlayerNames();
 
     // Handle WebSocket events
-    on('auth_success', (data: any) => {
+    webSocketService.on('auth_success', (data: any) => {
         toast({
             title: 'Połączono z serwerem gry',
             description: `Witaj ${data.username}!`,
         });
     });
 
-    on('room_created', (data: any) => {
+    webSocketService.on('room_created', (data: any) => {
         toast({
             title: 'Utworzono nowy pokój',
             description: `Utworzono pokój: ${data.room_name}`,
@@ -264,7 +262,7 @@ onMounted(() => {
         currentRoom.value = data.room_id;
     });
 
-    on('room_joined', (data: any) => {
+    webSocketService.on('room_joined', (data: any) => {
         toast({
             title: 'Dołączono do pokoju',
             description: `Dołączono do pokoju: ${data.room_name}`,
@@ -278,7 +276,7 @@ onMounted(() => {
         }
     });
 
-    on('game_started', (data: any) => {
+    webSocketService.on('game_started', (data: any) => {
         toast({
             title: 'Gra rozpoczęta',
             description: 'Rozpoczęto nową grę',
@@ -286,14 +284,14 @@ onMounted(() => {
         gameMessage.value = 'Gra się rozpoczęła! Twój ruch.';
     });
 
-    on('your_cards', (data: any) => {
+    webSocketService.on('your_cards', (data: any) => {
         // Update main player's cards with data from server
         if (data.cards && Array.isArray(data.cards)) {
             mainPlayerCards.value = data.cards;
         }
     });
 
-    on('card_played', (data: any) => {
+    webSocketService.on('card_played', (data: any) => {
         toast({
             title: 'Zagranie karty',
             description: `Gracz ${data.username} zagrał kartę`,
@@ -306,11 +304,11 @@ onMounted(() => {
         }
     });
 
-    on('turn_changed', (data: any) => {
+    webSocketService.on('turn_changed', (data: any) => {
         gameMessage.value = `Ruch gracza: ${data.current_player_username}`;
     });
 
-    on('game_over', (data: any) => {
+    webSocketService.on('game_over', (data: any) => {
         toast({
             title: 'Koniec gry',
             description: `Gracz ${data.winner.username} wygrał!`,
@@ -318,18 +316,20 @@ onMounted(() => {
         gameMessage.value = `Koniec gry! Wygrał gracz ${data.winner.username}`;
     });
 
-    // For demo purposes, use local data
-    dealCards();
-
     // If user is logged in, authenticate with WebSocket server
     if (isLoggedIn.value && user.value) {
         // Get user ID directly from the user object and ensure it's correctly typed
         const userId = user.value.id;
         console.log('Authenticating with WebSocket using user ID:', userId, 'Type:', typeof userId);
 
-        // Use the specific user ID, not a fallback
+        // Send auth message directly
         if (userId !== undefined && userId !== null) {
-            authenticate(userId, user.value.name, 'demo-token');
+            webSocketService.send({
+                type: MessageType.AUTH,
+                token: user.value.ws_token || 'demo-token',
+                user_id: userId,
+                username: user.value.name
+            });
         } else {
             console.error('Cannot authenticate: user.value.id is undefined or null');
             toast({
@@ -340,6 +340,36 @@ onMounted(() => {
         }
     }
 });
+
+// Set up event listeners for WebSocket game events
+const setupGameEventListeners = () => {
+  webSocketService.on('game_started', (data) => {
+    console.log('[GameBoard] Received game_started event:', data);
+    if (data.room_id === roomId.value) {
+      toast({
+        title: 'Gra rozpoczęta!',
+        description: 'Przygotuj się do gry'
+      });
+    }
+  });
+  
+  webSocketService.on('your_cards', (data) => {
+    if (data.cards && Array.isArray(data.cards)) {
+      mainPlayerCards.value = data.cards;
+    }
+  });
+  
+  webSocketService.on('game_state', (data) => {
+    // Update game state based on the received data
+    if (data.last_card) {
+      deckPile.value = [data.last_card];
+    }
+    if (data.is_your_turn !== undefined) {
+      props.isYourTurn = data.is_your_turn;
+    }
+    updatePlayerNames();
+  });
+};
 
 const getPlayerCards = (player: Player) => {
   return player.cards.map(card => ({
@@ -378,7 +408,7 @@ const getPlayerCards = (player: Player) => {
             <!-- Game Action Buttons -->
             <div class="absolute bottom-[10rem] left-1/2 transform -translate-x-1/2 flex gap-4">
                 <button
-                    @click="playSelectedCards"
+                    @click="handleCardPlay"
                     :disabled="selectedMainPlayerCards.length === 0"
                     :class="[
                 'play-button',
@@ -473,13 +503,13 @@ const getPlayerCards = (player: Player) => {
         <div class="absolute top-2 left-2 p-4 bg-gray-800 rounded-lg shadow-xl z-20 flex flex-col gap-2">
             <div v-if="!gameState.roomId" class="flex flex-col gap-2">
                 <button
-                    @click="WebSocketService.createRoom('Nowa Gra', 4)"
+                    @click="webSocketService.createRoom('Nowa Gra', 4)"
                     class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
                 >
                     Stwórz pokój
                 </button>
                 <button
-                    @click="WebSocketService.listRooms()"
+                    @click="webSocketService.listRooms()"
                     class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded"
                 >
                     Pokaż dostępne pokoje

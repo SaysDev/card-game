@@ -28,7 +28,7 @@ class WebSocketAuthService
     public function generateUserToken(User $user): array
     {
         $issuedAt = time();
-        $expirationTime = $issuedAt + 3600; // 1 hour
+        $expirationTime = $issuedAt + (60 * 60 * 24); // 24 hours
 
         $payload = [
             'iat' => $issuedAt,
@@ -40,10 +40,10 @@ class WebSocketAuthService
 
         $token = JWT::encode($payload, $this->secret, $this->algorithm);
         
-        $this->logger->info("User token generated", [
-            'user_id' => $user->id,
-            'username' => $user->name
-        ]);
+        // $this->logger->info("User token generated", [
+        //     'user_id' => $user->id,
+        //     'username' => $user->name
+        // ]);
 
         return [
             'token' => $token,

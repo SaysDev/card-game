@@ -4,7 +4,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useAuth } from '@/composables/useAuth';
 import { useToast } from '@/components/ui/toast';
 import GameBoard from '@/components/game/GameBoard.vue';
-import { webSocketService } from '@/Services/WebSocketService';
+import { webSocketService, standardizePlayerObject } from '@/Services/WebSocketService';
+import { MessageType } from '@/types/messageTypes';
 
 interface Player {
   user_id: number;
@@ -31,7 +32,7 @@ console.log(user);
 const { toast } = useToast();
 
 const roomSizes = [2, 3, 4, 6];
-const selectedSize = ref(2);
+const selectedSize = ref(4);
 const isPrivate = ref(false);
 const privateCode = ref('');
 const joined = ref(false);
@@ -49,6 +50,9 @@ const gameState = ref<GameState>({
   isYourTurn: false
 });
 
+
+const ready = ref(false);
+
 const playerReady = computed({
   get: () => {
     const userId = user.value?.id;
@@ -59,9 +63,9 @@ const playerReady = computed({
   },
   set: (value) => {
     webSocketService.send({
-      type: 'set_ready',
+      type: MessageType.SET_READY,
       data: {
-        ready: value
+        ready: !ready.value
       }
     });
   }
@@ -69,16 +73,18 @@ const playerReady = computed({
 
 function toggleReady() {
   webSocketService.send({
-    type: 'set_ready',
+    type: MessageType.SET_READY,
     data: {
-      ready: !playerReady.value
+      ready: !ready.value
     }
   });
+
+  ready.value = !ready.value;
 }
 
 function leaveRoom() {
   webSocketService.send({
-    type: 'leave_room',
+    type: MessageType.LEAVE_ROOM,
     data: {
       room_id: gameState.value.roomId
     }
@@ -92,10 +98,10 @@ function leaveRoom() {
 
 function joinQueue() {
   webSocketService.send({
-    type: 'matchmaking_join',
+    type: MessageType.MATCHMAKING_JOIN,
     data: {
       user_id: user.value?.id,
-      username: user.value?.username,
+      username: user.value?.name || user.value?.username,
       game_type: 'card_game',
       size: selectedSize.value,
       is_private: isPrivate.value,
@@ -105,24 +111,19 @@ function joinQueue() {
 }
 
 // Add WebSocket event handlers
-webSocketService.on('matchmaking_success', (data) => {
+webSocketService.on(MessageType.MATCHMAKING_SUCCESS, (data) => {
+  console.log('Matchmaking success:', data);
   joined.value = true;
   gameState.value.roomId = data.room_id;
   gameState.value.roomName = data.room_name;
   
   if (data.players && Array.isArray(data.players)) {
-    gameState.value.players = data.players.map((p: any): Player => ({
-      user_id: p.user_id || p.id || 0,
-      username: p.username || p.name || 'Gracz',
-      status: p.status || 'not_ready',
-      ready: p.ready || p.status === 'ready',
-      score: p.score ?? 0,
-      cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-    }));
+    console.log('Setting players:', data.players);
+    gameState.value.players = data.players.map(standardizePlayerObject);
   }
 });
 
-webSocketService.on('player_ready', (data) => {
+webSocketService.on(MessageType.PLAYER_READY, (data) => {
   if (gameState.value.roomId === data.room_id) {
     const playerIndex = gameState.value.players.findIndex(p => p.user_id === data.player_id);
     if (playerIndex !== -1) {
@@ -132,49 +133,47 @@ webSocketService.on('player_ready', (data) => {
   }
 });
 
-webSocketService.on('set_ready', (data) => {
+webSocketService.on(MessageType.PLAYER_READY_STATUS, (data) => {
+  if (gameState.value.roomId === data.room_id) {
+    gameState.value.players = data.players.map(standardizePlayerObject);
+  }
+});
+
+webSocketService.on(MessageType.SET_READY, (data) => {
   if (data.success) {
-    const playerIndex = gameState.value.players.findIndex(p => p.user_id === user.value?.id);
-    if (playerIndex !== -1) {
-      gameState.value.players[playerIndex].status = data.ready ? 'ready' : 'not_ready';
-      gameState.value.players[playerIndex].ready = data.ready;
+    ready.value = data.ready;
+  }
+});
+
+webSocketService.on(MessageType.PLAYER_JOINED, (data) => {
+  console.log('Player joined:', data);
+  if (gameState.value.roomId === data.room_id) {
+    if (!gameState.value.players.some(p => p.user_id === data.player_id)) {
+      gameState.value.players.push(standardizePlayerObject({
+        user_id: data.player_id,
+        username: data.player_name,
+        status: 'not_ready',
+        ready: false
+      }));
     }
   }
 });
 
-webSocketService.on('player_joined', (data) => {
-  if (gameState.value.roomId === data.room_id) {
-    gameState.value.players.push({
-      user_id: data.player_id,
-      username: data.player_name,
-      status: 'not_ready',
-      ready: false,
-      score: 0,
-      cards_count: 0
-    });
-  }
-});
-
-webSocketService.on('player_left', (data) => {
+webSocketService.on(MessageType.PLAYER_LEFT, (data) => {
+  console.log('Player left:', data);
   if (gameState.value.roomId === data.room_id) {
     gameState.value.players = gameState.value.players.filter(p => p.user_id !== data.player_id);
   }
 });
 
-webSocketService.on('room_update', (data) => {
+webSocketService.on(MessageType.ROOM_UPDATE, (data) => {
+  console.log('Room update:', data);
   if (gameState.value.roomId === data.room_id) {
-    gameState.value.players = data.players.map((p: any): Player => ({
-      user_id: p.user_id || p.id || 0,
-      username: p.username || p.name || 'Gracz',
-      status: p.status || 'not_ready',
-      ready: p.ready || p.status === 'ready',
-      score: p.score ?? 0,
-      cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-    }));
+    gameState.value.players = data.players.map(standardizePlayerObject);
   }
 });
 
-webSocketService.on('room_closed', (data) => {
+webSocketService.on(MessageType.ROOM_CLOSED, (data) => {
   if (gameState.value.roomId === data.room_id) {
     joined.value = false;
     gameStarted.value = false;
@@ -189,7 +188,21 @@ webSocketService.on('room_closed', (data) => {
   }
 });
 
-webSocketService.on('error', (data) => {
+webSocketService.on(MessageType.GAME_STARTED, (data) => {
+  console.log('[WebSocket] Received game_started message:', data);
+  if (gameState.value.roomId === data.room_id) {
+    gameStarted.value = true;
+    toast({
+      title: 'Gra rozpoczęta!',
+      description: 'Przekierowywanie do stołu gry...'
+    });
+    
+    // Redirect to the game table page with room ID
+    window.location.href = `/game/table?room_id=${data.room_id}`;
+  }
+});
+
+webSocketService.on(MessageType.ERROR, (data) => {
   toast({ 
     title: 'Błąd', 
     description: data.message || 'Wystąpił nieznany błąd', 

@@ -2,15 +2,15 @@
 
 namespace App\Game;
 
-use Swoole\Event;
-use Swoole\Http\Request;
+use OpenSwoole\Event;
+use OpenSwoole\Http\Request;
 use App\Game\Core\Matchmaker;
-use Swoole\WebSocket\Frame;
-use Swoole\WebSocket\Server;
+use OpenSwoole\WebSocket\Frame;
+use OpenSwoole\WebSocket\Server;
 use App\Models\User;
-use Swoole\Table;
+use OpenSwoole\Table;
 use Exception;
-use Swoole\Server as SwooleServer;
+use OpenSwoole\Server as OpenSwooleServer;
 use App\Game\GameServerManager;
 use App\Game\Core\Logger;
 use App\Game\Core\MessageType;
@@ -26,6 +26,7 @@ class LobbyServer
 {
     private const QUEUE_PROCESS_INTERVAL = 100000; // 100ms in microseconds
     private const SERVER_CHECK_INTERVAL = 5000; // 5 seconds
+    private const DEFAULT_ROOM_SIZE = 2; // Default number of players per room
 
     private Logger $logger;
     private string $host;
@@ -119,49 +120,44 @@ class LobbyServer
 
     private function initializeTables(): void
     {
-        // Initialize clients table
-        $this->clientsTable = new Table(1024);
-        $this->clientsTable->column('fd', Table::TYPE_INT);
-        $this->clientsTable->column('user_id', Table::TYPE_INT);
-        $this->clientsTable->column('username', Table::TYPE_STRING, 64);
-        $this->clientsTable->column('room_id', Table::TYPE_INT);
-        $this->clientsTable->column('authenticated', Table::TYPE_INT);
+        // Tabela klientów WebSocket
+        $this->clientsTable = new \OpenSwoole\Table(1024);
+        $this->clientsTable->column('fd', \OpenSwoole\Table::TYPE_INT);
+        $this->clientsTable->column('user_id', \OpenSwoole\Table::TYPE_INT);
+        $this->clientsTable->column('username', \OpenSwoole\Table::TYPE_STRING, 64);
+        $this->clientsTable->column('authenticated', \OpenSwoole\Table::TYPE_INT);
+        $this->clientsTable->column('room_id', \OpenSwoole\Table::TYPE_INT);
+        $this->clientsTable->column('status', \OpenSwoole\Table::TYPE_STRING, 32);
+        $this->clientsTable->column('ready', \OpenSwoole\Table::TYPE_INT);
         $this->clientsTable->create();
 
-        // Initialize rooms table
-        $this->roomsTable = new Table(1024);
-        $this->roomsTable->column('id', Table::TYPE_INT);
-        $this->roomsTable->column('game_type', Table::TYPE_STRING, 32);
-        $this->roomsTable->column('status', Table::TYPE_STRING, 32);
-        $this->roomsTable->column('player_count', Table::TYPE_INT);
-        $this->roomsTable->column('max_players', Table::TYPE_INT);
-        $this->roomsTable->column('is_private', Table::TYPE_INT);
-        $this->roomsTable->column('private_code', Table::TYPE_STRING, 32);
-        $this->roomsTable->column('game_server_id', Table::TYPE_INT);
-        $this->roomsTable->column('game_server_ip', Table::TYPE_STRING, 32);
-        $this->roomsTable->column('game_server_port', Table::TYPE_INT);
+        // Tabela pokoi
+        $this->roomsTable = new \OpenSwoole\Table(1024);
+        $this->roomsTable->column('id', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('game_type', \OpenSwoole\Table::TYPE_STRING, 32);
+        $this->roomsTable->column('status', \OpenSwoole\Table::TYPE_STRING, 32);
+        $this->roomsTable->column('player_count', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('max_players', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('is_private', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('private_code', \OpenSwoole\Table::TYPE_STRING, 32);
+        $this->roomsTable->column('game_server_id', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('game_server_ip', \OpenSwoole\Table::TYPE_STRING, 64);
+        $this->roomsTable->column('game_server_port', \OpenSwoole\Table::TYPE_INT);
+        $this->roomsTable->column('game_server_room_id', \OpenSwoole\Table::TYPE_INT);
         $this->roomsTable->create();
 
-        // Initialize players table
-        $this->playersTable = new Table(1024);
-        $this->playersTable->column('id', Table::TYPE_INT);
-        $this->playersTable->column('user_id', Table::TYPE_INT);
-        $this->playersTable->column('username', Table::TYPE_STRING, 64);
-        $this->playersTable->column('room_id', Table::TYPE_INT);
-        $this->playersTable->column('status', Table::TYPE_STRING, 32);
-        $this->playersTable->create();
-
-        // Initialize game servers table
-        $this->gameServersTable = new Table(1024);
-        $this->gameServersTable->column('id', Table::TYPE_INT);
-        $this->gameServersTable->column('ip', Table::TYPE_STRING, 64);
-        $this->gameServersTable->column('port', Table::TYPE_INT);
-        $this->gameServersTable->column('max_rooms', Table::TYPE_INT);
-        $this->gameServersTable->column('fd', Table::TYPE_INT);
-        $this->gameServersTable->column('status', Table::TYPE_STRING, 32);
-        $this->gameServersTable->column('load', Table::TYPE_FLOAT, 8);
-        $this->gameServersTable->column('last_ping', Table::TYPE_INT);
-        $this->gameServersTable->column('last_update', Table::TYPE_INT);
+        // Tabela serwerów gry
+        $this->gameServersTable = new \OpenSwoole\Table(32);
+        $this->gameServersTable->column('id', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('fd', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('ip', \OpenSwoole\Table::TYPE_STRING, 64);
+        $this->gameServersTable->column('port', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('status', \OpenSwoole\Table::TYPE_STRING, 32);
+        $this->gameServersTable->column('load', \OpenSwoole\Table::TYPE_FLOAT);
+        $this->gameServersTable->column('rooms_count', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('players_count', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('last_ping', \OpenSwoole\Table::TYPE_INT);
+        $this->gameServersTable->column('last_update', \OpenSwoole\Table::TYPE_INT);
         $this->gameServersTable->create();
     }
 
@@ -319,6 +315,30 @@ class LobbyServer
         if (function_exists('cli_set_process_title')) {
             cli_set_process_title("lobby-server-ws-worker-{$workerId}");
         }
+        
+        // Set up timer to log memory usage every 10 seconds
+        // \OpenSwoole\Timer::tick(10000, function() use ($workerId) {
+        //     $this->logWsMemoryUsage($workerId);
+        // });
+    }
+
+    /**
+     * Log current WebSocket worker memory usage
+     */
+    private function logWsMemoryUsage(int $workerId): void
+    {
+        $memoryUsage = memory_get_usage(true);
+        $memoryPeakUsage = memory_get_peak_usage(true);
+        
+        $memoryUsageMB = round($memoryUsage / 1024 , 7);
+        $memoryPeakUsageMB = round($memoryPeakUsage / 1024 , 7);
+        
+        $this->wsLogger->info(sprintf(
+            "Memory Usage - Lobby WS Worker #%d - Current: %sKB, Peak: %sKB",
+            $workerId,
+            $memoryUsageMB,
+            $memoryPeakUsageMB
+        ));
     }
 
     public function onWsOpen(\OpenSwoole\WebSocket\Server $server, \OpenSwoole\Http\Request $request): void
@@ -345,10 +365,13 @@ class LobbyServer
 
             switch ($message['type']) {
                 case MessageType::AUTH->value:
-                    $this->handleClientAuth($server, $frame->fd, $message);
+                    $this->handleAuth($server, $frame->fd, $message);
                     break;
                 case MessageType::MATCHMAKING_JOIN->value:
                     $this->handleMatchmakingJoin($server, $frame->fd, $message);
+                    break;
+                case MessageType::MATCHMAKING_LEAVE->value:
+                    $this->handleMatchmakingLeave($server, $frame->fd, $message);
                     break;
                 case MessageType::SET_READY->value:
                     $this->handleSetReady($server, $frame->fd, $message);
@@ -367,81 +390,97 @@ class LobbyServer
         }
     }
 
-    private function handleClientAuth(\OpenSwoole\WebSocket\Server $server, int $fd, array $message): void
+    public function handlePing(\OpenSwoole\WebSocket\Server $server, int $fd): void
+    {
+        $this->logger->debug("Ping from client {$fd}");
+        $this->sendWsResponse($server, $fd, [
+            'type' => MessageType::PONG->value,
+        ]);
+    }
+
+    private function handleAuth(\OpenSwoole\WebSocket\Server $server, int $fd, array $message): void
     {
         try {
             if (!isset($message['token'])) {
-                throw new Exception("Missing authentication token");
+                throw new Exception("Missing token");
             }
 
-            // In a real app, validate token with your authentication system
-            // For this example, we'll use a dummy validation
             $token = $message['token'];
-            $userData = $this->validateToken($token);
-
-            if (!$userData) {
-                throw new Exception("Invalid authentication token");
+            
+            // Sprawdź czy klucz JWT jest ustawiony
+            $jwtSecret = config('app.key');
+            $this->logger->debug("JWT Secret length: " . strlen($jwtSecret));
+            
+            if (empty($jwtSecret)) {
+                throw new Exception("JWT secret key is not configured");
             }
 
-            // Store client information
+            try {
+                $this->logger->debug("Attempting to decode token");
+                $decoded = JWT::decode($token, new Key($jwtSecret, 'HS256'));
+                $this->logger->debug("Token decoded successfully", [
+                    'user_id' => $decoded->user_id,
+                    'username' => $decoded->username,
+                    'exp' => $decoded->exp,
+                    'current_time' => time()
+                ]);
+            } catch (\Exception $e) {
+                $this->logger->error("Token decode error: " . $e->getMessage());
+                throw new Exception("Invalid token: " . $e->getMessage());
+            }
+            
+            if ($decoded->type !== 'user') {
+                throw new Exception("Invalid token type");
+            }
+
+            // Sprawdź czy użytkownik już nie jest zalogowany
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['user_id'] == $decoded->user_id) {
+                    // Jeśli znaleziono inny fd tego samego użytkownika, wyczyść jego stan
+                    if ($clientFd !== $fd) {
+                        $this->handleMatchmakingLeave($server, $clientFd, ['type' => 'matchmaking_leave']);
+                    }
+                }
+            }
+
+            // Zapisz informacje o kliencie
             $this->clientsTable->set($fd, [
                 'fd' => $fd,
-                'user_id' => $userData['id'],
-                'username' => $userData['username'],
+                'user_id' => $decoded->user_id,
+                'username' => $decoded->username,
+                'authenticated' => 1,
                 'room_id' => 0,
-                'authenticated' => 1
+                'status' => 'idle',
+                'ready' => 0
             ]);
 
-            $this->sendWsResponse($server, $fd, [
-                'type' => MessageType::AUTH_SUCCESS->value,
-                'user_id' => $userData['id'],
-                'username' => $userData['username']
-            ]);
+            // Wyślij potwierdzenie
+            $server->push($fd, json_encode([
+                'type' => 'auth_success',
+                'user_id' => $decoded->user_id,
+                'username' => $decoded->username,
+                'exp' => $decoded->exp
+            ]));
 
-            $this->logger->info("Client {$fd} authenticated as user {$userData['id']} ({$userData['username']})");
+            $this->logger->info("Client {$fd} authenticated as user {$decoded->user_id} ({$decoded->username})");
         } catch (Exception $e) {
-            $this->logger->error("Authentication error for client {$fd}: " . $e->getMessage());
+            $this->logger->error("Authentication error: " . $e->getMessage());
             $this->sendWsError($server, $fd, $e->getMessage());
-        }
-    }
-
-    private function validateToken(string $token): ?array
-    {
-        try {
-            // In a real app, validate the token with your authentication system
-            // For testing, we'll just decode the JWT and return the payload
-            $tokenParts = explode('.', $token);
-            if (count($tokenParts) !== 3) {
-                return null;
-            }
-
-            $payload = json_decode(base64_decode($tokenParts[1]), true);
-            if (!$payload || !isset($payload['user_id']) || !isset($payload['username'])) {
-                return null;
-            }
-
-            return [
-                'id' => $payload['user_id'],
-                'username' => $payload['username']
-            ];
-        } catch (Exception $e) {
-            $this->logger->error("Token validation error: " . $e->getMessage());
-            return null;
         }
     }
 
     public function onWsClose(\OpenSwoole\WebSocket\Server $server, int $fd): void
     {
         $this->logger->debug("WebSocket connection closed: {$fd}");
-        if (isset($this->clients[$fd])) {
-            $client = $this->clients[$fd];
-            if ($client['room_id']) {
-                $this->handleLeaveGame($server, $fd, [
+        $client = $this->clientsTable->get($fd);
+        if ($client) {
+            if ($client['room_id'] > 0) {
+                $this->handleMatchmakingLeave($server, $fd, [
                     'type' => MessageType::LEAVE_GAME->value,
-                'room_id' => $client['room_id']
-            ]);
-        }
-            unset($this->clients[$fd]);
+                    'room_id' => $client['room_id']
+                ]);
+            }
+            $this->clientsTable->del($fd);
         }
     }
 
@@ -608,8 +647,8 @@ class LobbyServer
             }
 
             $data = $message['data'];
-            if (!isset($data['game_type']) || !isset($data['size'])) {
-                throw new Exception("Missing required parameters");
+            if (!isset($data['game_type'])) {
+                throw new Exception("Missing game type");
             }
 
             $client = $this->clientsTable->get($fd);
@@ -617,62 +656,221 @@ class LobbyServer
                 throw new Exception("Client not authenticated");
             }
 
-            // Get a game server
-            $gameServer = $this->findLeastLoadedGameServer();
-            if (!$gameServer) {
-                throw new Exception("No available game servers");
+            // Sprawdź czy użytkownik już nie jest w jakimś pokoju lub matchmakingu
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['user_id'] == $client['user_id'] && 
+                    ($clientInfo['room_id'] > 0 || ($clientInfo['status'] ?? 'idle') === 'matchmaking')) {
+                    // Jeśli znaleziono inny fd tego samego użytkownika, wyczyść jego stan
+                    if ($clientFd !== $fd) {
+                        $this->handleMatchmakingLeave($server, $clientFd, ['type' => 'matchmaking_leave']);
+                    }
+                    throw new Exception("You are already in a room or matchmaking. Leave first before joining again.");
+                }
             }
 
-            // Send create room request to game server
-            $response = $this->sendToGameServer($gameServer['ip'], $gameServer['port'], [
-                'type' => 'create_room',
-                'game_type' => $data['game_type'],
-                'max_players' => $data['size'],
-                'is_private' => $data['is_private'] ?? false,
-                'private_code' => $data['private_code'] ?? '',
-                'user_id' => $client['user_id'],
-                'username' => $client['username']
-            ]);
-
-            if (!$response) {
-                throw new Exception("No response from game server");
+            // Szukaj istniejącego pokoju o tych samych parametrach
+            $existingRoom = null;
+            foreach ($this->roomsTable as $roomId => $room) {
+                if (
+                    $room['game_type'] === $data['game_type'] &&
+                    $room['status'] === 'waiting' &&
+                    $room['player_count'] < $room['max_players'] &&
+                    ($room['is_private'] ? ($room['private_code'] === ($data['private_code'] ?? '')) : true) &&
+                    $room['max_players'] == self::DEFAULT_ROOM_SIZE
+                ) {
+                    // Sprawdź czy użytkownik już nie jest w tym pokoju
+                    $isPlayerInRoom = false;
+                    foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                        if ($clientInfo['room_id'] == $roomId && $clientInfo['user_id'] == $client['user_id']) {
+                            $isPlayerInRoom = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!$isPlayerInRoom) {
+                        $existingRoom = $room;
+                        break;
+                    }
+                }
             }
 
-            if (!isset($response['type']) || $response['type'] !== 'create_room_success') {
-                throw new Exception($response['message'] ?? "Failed to create room");
+            $roomId = null;
+            if ($existingRoom) {
+                // Dołącz do istniejącego pokoju
+                $roomId = $existingRoom['id'];
+                // Zwiększ licznik graczy w pokoju
+                $this->roomsTable->set($existingRoom['id'], [
+                    'player_count' => $existingRoom['player_count'] + 1
+                ]);
+            } else {
+                // Generuj unikalne ID pokoju
+                $roomId = $this->generateRoomId();
+                
+                // Stwórz nowy pokój w tabeli rooms
+                $this->roomsTable->set($roomId, [
+                    'id' => $roomId,
+                    'game_type' => $data['game_type'],
+                    'status' => 'waiting',
+                    'player_count' => 1,
+                    'max_players' => self::DEFAULT_ROOM_SIZE,
+                    'is_private' => $data['is_private'] ? 1 : 0,
+                    'private_code' => $data['private_code'] ?? '',
+                    'game_server_id' => 0, // Będzie ustawione gdy pokój zostanie utworzony na serwerze gry
+                    'game_server_ip' => '',
+                    'game_server_port' => 0,
+                    'game_server_room_id' => 0
+                ]);
             }
 
-            // Store room information
-            $this->roomsTable->set($response['room_id'], [
-                'id' => $response['room_id'],
-                'game_type' => $response['game_type'],
-                'status' => 'waiting',
-                'player_count' => 1,
-                'max_players' => $response['max_players'],
-                'is_private' => $data['is_private'] ? 1 : 0,
-                'private_code' => $data['private_code'] ?? '',
-                'game_server_id' => $gameServer['id'],
-                'game_server_ip' => $gameServer['ip'],
-                'game_server_port' => $gameServer['port']
-            ]);
+            // Update client's room_id and status
+            $clientData = $this->clientsTable->get($fd);
+            if ($clientData) {
+                $clientData['room_id'] = $roomId;
+                $clientData['status'] = 'not_ready';
+                $clientData['ready'] = 0;
+                $this->clientsTable->set($fd, $clientData);
+            }
 
-            // Update client's room_id
-            $this->clientsTable->set($fd, [
-                'room_id' => $response['room_id']
-            ]);
+            // Get all players in the room
+            $players = [];
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['room_id'] == $roomId) {
+                    $players[] = [
+                        'user_id' => $clientInfo['user_id'],
+                        'username' => $clientInfo['username'],
+                        'status' => $clientInfo['status'] ?? 'not_ready',
+                        'ready' => $clientInfo['ready'] ?? 0
+                    ];
+                }
+            }
 
-            // Send success response to client
+            // Sprawdź czy jest wystarczająco graczy i czy wszyscy są gotowi
+            $room = $this->roomsTable->get($roomId);
+            if ($room['player_count'] >= self::DEFAULT_ROOM_SIZE) {
+                $allReady = true;
+                foreach ($players as $player) {
+                    if (!($player['ready'] ?? 0)) {
+                        $allReady = false;
+                        break;
+                    }
+                }
+
+                if ($allReady) {
+                    // Utwórz pokój na serwerze gry i rozpocznij grę
+                    $this->createRoomOnGameServer($server, $roomId, $players);
+                }
+            }
+
+            // Send success response to client with player list
             $server->push($fd, json_encode([
                 'type' => 'matchmaking_success',
-                'room_id' => $response['room_id'],
+                'room_id' => $roomId,
                 'game_type' => $data['game_type'],
-                'max_players' => $data['size']
+                'max_players' => self::DEFAULT_ROOM_SIZE,
+                'players' => $players
             ]));
+
+            // Notify other players in the room about new player
+            $this->notifyRoomPlayers($server, $roomId, [
+                'type' => 'player_joined',
+                'room_id' => $roomId,
+                'player' => [
+                    'user_id' => $client['user_id'],
+                    'username' => $client['username'],
+                    'status' => 'not_ready',
+                    'ready' => 0
+                ]
+            ], [$fd]);
 
             $this->logger->info("Player {$client['user_id']} ({$client['username']}) joined matchmaking for {$data['game_type']}");
         } catch (Exception $e) {
             $this->logger->error("Error in matchmaking join: " . $e->getMessage());
             $this->sendWsError($server, $fd, $e->getMessage());
+        }
+    }
+
+    private function generateRoomId(): int
+    {
+        // Znajdź najwyższe istniejące ID pokoju
+        $maxId = 0;
+        foreach ($this->roomsTable as $room) {
+            if ($room['id'] > $maxId) {
+                $maxId = $room['id'];
+            }
+        }
+        
+        // Zwróć następne ID
+        return $maxId + 1;
+    }
+
+    private function createRoomOnGameServer(\OpenSwoole\WebSocket\Server $server, string $roomId, array $players): void
+    {
+        try {
+            $room = $this->roomsTable->get($roomId);
+            if (!$room) {
+                throw new Exception("Room not found");
+            }
+
+            $gameServer = $this->findLeastLoadedGameServer();
+            if (!$gameServer) {
+                throw new Exception("No available game server");
+            }
+
+            // Get the first player's information (room creator)
+            $firstPlayer = null;
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['room_id'] == $roomId) {
+                    $firstPlayer = $clientInfo;
+                    break;
+                }
+            }
+
+            if (!$firstPlayer) {
+                throw new Exception("No players found in room");
+            }
+
+            $request = [
+                'type' => 'create_room',
+                'room_id' => $roomId,
+                'game_type' => $room['game_type'],
+                'max_players' => $room['max_players'],
+                'is_private' => $room['is_private'],
+                'private_code' => $room['private_code'],
+                'user_id' => $firstPlayer['user_id'],
+                'username' => $firstPlayer['username'],
+                'players' => $players
+            ];
+
+            $this->logger->debug("Sending to game server {$gameServer['ip']}:{$gameServer['port']}: " . json_encode($request));
+            
+            $response = $this->sendToGameServer($gameServer['ip'], $gameServer['port'], $request);
+            if (!$response) {
+                throw new Exception("Failed to create room on game server");
+            }
+
+            if ($response['type'] !== 'create_room_success') {
+                throw new Exception("Game server returned error: " . ($response['error'] ?? 'Unknown error'));
+            }
+
+            // Update room with game server information and the new room ID
+            $room['game_server_id'] = $gameServer['id'];
+            $room['game_server_room_id'] = $response['room_id']; // Use the room ID from game server
+            $this->roomsTable->set($roomId, $room);
+
+            $this->logger->info("Room {$roomId} created on game server {$gameServer['id']} with game server room ID {$response['room_id']}");
+            $this->startGame($server, $roomId);
+        } catch (Exception $e) {
+            $this->logger->error("Error creating room on game server: " . $e->getMessage());
+            // Notify all players in the room about the error
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['room_id'] == $roomId) {
+                    $server->push($clientFd, json_encode([
+                        'type' => 'error',
+                        'message' => 'Failed to create game room: ' . $e->getMessage()
+                    ]));
+                }
+            }
+            throw $e;
         }
     }
 
@@ -724,66 +922,80 @@ class LobbyServer
         return $pid ? (int)$pid : null;
     }
 
-    private function handleMatchmakingLeave(\OpenSwoole\WebSocket\Server $server, int $fd, array $data): void
+    private function handleMatchmakingLeave(\OpenSwoole\WebSocket\Server $server, int $fd, array $message): void
     {
         try {
             $client = $this->clientsTable->get($fd);
-            if (!$client) {
-                return; // Client already disconnected
+            if (!$client || !$client['authenticated']) {
+                throw new Exception("Client not authenticated");
             }
 
-            $roomId = $client['room_id'];
-            if (!$roomId) {
-                return; // Client not in a room
-            }
+            if ($client['room_id'] > 0) {
+                $room = $this->roomsTable->get($client['room_id']);
+                if ($room) {
+                    // Jeśli pokój jest już na serwerze gry, wyślij żądanie opuszczenia
+                    if ($room['game_server_id'] > 0) {
+                        $gameServer = $this->gameServersTable->get($room['game_server_id']);
+                        if ($gameServer) {
+                            $this->sendToGameServer($gameServer['ip'], $gameServer['port'], [
+                                'type' => 'leave_room',
+                                'room_id' => $client['room_id'],
+                                'user_id' => $client['user_id']
+                            ]);
+                        }
+                    }
 
-            $room = $this->roomsTable->get($roomId);
-            if (!$room) {
-                // Room doesn't exist anymore
-                $this->clientsTable->set($fd, [
-                    'room_id' => 0
-                ]);
-                return;
-            }
+                    // Zmniejsz licznik graczy w pokoju
+                    $this->roomsTable->set($client['room_id'], [
+                        'player_count' => $room['player_count'] - 1
+                    ]);
 
-            $serverId = $room['server_id'];
-            $serverInfo = $this->gameServersTable->get($serverId);
-            
-            if ($serverInfo) {
-                // Connect to the game server
-                $gameServerClient = $this->connectToGameServer($serverInfo['ip'], $serverInfo['port']);
-                if ($gameServerClient) {
-                    // Send leave request
-                    $leaveMessage = [
-                        'type' => MessageType::LEAVE_GAME->value,
-                        'room_id' => $roomId,
-                        'user_id' => $client['user_id']
-                    ];
-
-                    $messageJson = json_encode($leaveMessage);
-                    $packed = pack('N', strlen($messageJson)) . $messageJson;
-                    $gameServerClient->send($packed);
-
-                    // Don't need to wait for response
-                    $gameServerClient->close();
+                    // Jeśli to był ostatni gracz, usuń pokój
+                    if ($room['player_count'] <= 1) {
+                        $this->roomsTable->del($client['room_id']);
+                    
+                        // Powiadom innych graczy o opuszczeniu pokoju
+                        $this->notifyRoomPlayers($server, $client['room_id'], [
+                            'type' => 'player_left',
+                            'room_id' => $client['room_id'],
+                            'user_id' => $client['user_id']
+                        ], [$fd]);
+                    }
                 }
             }
 
-            // Update player's state
-            $this->clientsTable->set($fd, [
-                'room_id' => 0
-            ]);
+            // Wyczyść room_id i status użytkownika
+            $clientData = $this->clientsTable->get($fd);
+            if ($clientData) {
+                $clientData['room_id'] = 0;
+                $clientData['status'] = 'idle';
+                $clientData['ready'] = 0;
+                $this->clientsTable->set($fd, $clientData);
+            }
 
-            // Send confirmation to client
-            $this->sendResponse($server, $fd, [
-                'type' => MessageType::LEAVE_ROOM->value,
-                'room_id' => $roomId
-            ]);
+            // Wyślij potwierdzenie do klienta tylko jeśli jest jeszcze połączony
+            if ($server->isEstablished($fd)) {
+                $server->push($fd, json_encode([
+                    'type' => 'matchmaking_leave_success'
+                ]));
+            }
 
-            $this->logger->info("Player {$client['user_id']} left room {$roomId}");
+            // Powiadom innych graczy o opuszczeniu pokoju w matchmakingu i wyslij im informacje o opuszczeniu
+            $this->notifyRoomPlayers($server, $client['room_id'], [
+                'type' => 'player_left',
+                'room_id' => $client['room_id'],
+                'player' => [
+                    'user_id' => $client['user_id'],
+                    'username' => $client['username']
+                ]
+            ], [$fd]);
+
+            $this->logger->info("Player {$client['user_id']} ({$client['username']}) left matchmaking");
         } catch (Exception $e) {
             $this->logger->error("Error in matchmaking leave: " . $e->getMessage());
-            $this->sendError($server, $fd, "Internal server error: " . $e->getMessage());
+            if ($server->isEstablished($fd)) {
+                $this->sendWsError($server, $fd, $e->getMessage());
+            }
         }
     }
 
@@ -863,6 +1075,30 @@ class LobbyServer
         if (function_exists('cli_set_process_title')) {
             cli_set_process_title("lobby-server-tcp-worker-{$workerId}");
         }
+        
+        // Set up timer to log memory usage every 10 seconds
+        // \OpenSwoole\Timer::tick(10000, function() use ($workerId) {
+        //     $this->logTcpMemoryUsage($workerId);
+        // });
+    }
+
+    /**
+     * Log current TCP worker memory usage
+     */
+    private function logTcpMemoryUsage(int $workerId): void
+    {
+        $memoryUsage = memory_get_usage(true);
+        $memoryPeakUsage = memory_get_peak_usage(true);
+        
+        $memoryUsageMB = round($memoryUsage / 1024 / 1024, 2);
+        $memoryPeakUsageMB = round($memoryPeakUsage / 1024 / 1024, 2);
+        
+        $this->tcpLogger->info(sprintf(
+            "Memory Usage - Lobby TCP Worker #%d - Current: %sMB, Peak: %sMB",
+            $workerId,
+            $memoryUsageMB,
+            $memoryPeakUsageMB
+        ));
     }
 
     public function onTcpConnect(\OpenSwoole\Server $server, int $fd): void
@@ -900,13 +1136,13 @@ class LobbyServer
             $this->logger->debug("Received TCP message from client {$fd}: " . $messageData);
 
             switch ($message['type']) {
-                case 'register':
+                case MessageType::REGISTER->value:
                     $this->handleGameServerRegistration($server, $fd, $message);
                     break;
-                case 'ping':
+                case MessageType::PING->value:
                     $this->handleGameServerPing($server, $fd, $message);
                     break;
-                case 'status_update':
+                case MessageType::STATUS_UPDATE->value:
                     $this->handleGameServerStatusUpdate($server, $fd, $message);
                     break;
                 default:
@@ -923,7 +1159,7 @@ class LobbyServer
 
     public function onTcpClose(\OpenSwoole\Server $server, int $fd): void
     {
-        $this->logger->debug("TCP Client disconnected: {$fd}");
+        // $this->logger->debug("TCP Client disconnected: {$fd}");
         
         // Don't immediately remove game servers on disconnect
         // They will be cleaned up by the cleanup timer if they don't reconnect
@@ -945,6 +1181,7 @@ class LobbyServer
             $ip = $message['ip'];
             $port = $message['port'];
             $maxRooms = $message['max_rooms'] ?? 10;
+            $currentTime = time();
 
             // Store game server information
             $this->gameServersTable->set($serverId, [
@@ -955,15 +1192,16 @@ class LobbyServer
                 'fd' => $fd,
                 'status' => 'active',
                 'load' => 0.0,
-                'last_ping' => time(),
-                'last_update' => time()
+                'rooms_count' => 0,
+                'players_count' => 0,
+                'last_ping' => $currentTime
             ]);
 
             // Prepare success response
             $response = [
-                'type' => 'register_success',
+                'type' => MessageType::REGISTER_SUCCESS->value,
                 'server_id' => $serverId,
-                'timestamp' => time()
+                'timestamp' => $currentTime
             ];
 
             // Encode response to JSON
@@ -974,8 +1212,6 @@ class LobbyServer
 
             // Add length prefix (4 bytes)
             $message = pack('N', strlen($json)) . $json;
-            
-            $this->logger->debug("Sending registration response to game server {$serverId}: " . $json);
             
             // Send response
             if (!$server->send($fd, $message)) {
@@ -988,7 +1224,7 @@ class LobbyServer
             
             // Prepare error response
             $response = [
-                'type' => 'error',
+                'type' => MessageType::ERROR->value,
                 'message' => $e->getMessage()
             ];
 
@@ -1021,14 +1257,13 @@ class LobbyServer
                 throw new Exception("Game server {$serverId} not found");
             }
 
-            // Update last ping time
-            $this->gameServersTable->set($serverId, [
-                'last_ping' => time()
-            ]);
+            // Update last ping time while preserving other server info
+            $serverInfo['last_ping'] = time();
+            $this->gameServersTable->set($serverId, $serverInfo);
 
             // Send pong response
             $this->sendTcpResponse($server, $fd, [
-                'type' => 'pong',
+                'type' => MessageType::PONG->value,
                 'server_id' => $serverId,
                 'timestamp' => time()
             ]);
@@ -1058,15 +1293,15 @@ class LobbyServer
             $this->gameServersTable->set($serverId, [
                 'status' => $status,
                 'load' => $load,
-                'last_update' => time(),
-                'last_ping' => time()  // Update last ping time on status update
+                'last_ping' => time(),
+                'last_update' => time()
             ]);
 
             $this->logger->info("Game Server #{$serverId} status updated to {$status} with load {$load}");
 
             // Send success response
             $this->sendTcpResponse($server, $fd, [
-                'type' => 'status_update_success',
+                'type' => MessageType::STATUS_UPDATE_SUCCESS->value,
                 'server_id' => $serverId,
                 'timestamp' => time()
             ]);
@@ -1090,7 +1325,7 @@ class LobbyServer
             $packed = pack('N', $length) . $json;
             
             $this->logger->debug("Sending TCP response to client {$fd}: " . $json);
-            $this->logger->debug("Response length: " . strlen($packed));
+            // $this->logger->debug("Response length: " . strlen($packed));
             
             $server->send($fd, $packed);
         } catch (Exception $e) {
@@ -1102,7 +1337,7 @@ class LobbyServer
     private function sendTcpError(\OpenSwoole\Server $server, int $fd, string $message): void
     {
         $this->sendTcpResponse($server, $fd, [
-            'type' => 'error',
+            'type' => MessageType::ERROR->value,
             'message' => $message
         ]);
     }
@@ -1118,7 +1353,8 @@ class LobbyServer
             'user_id' => 0,
             'username' => '',
             'room_id' => 0,
-            'last_ping' => microtime(true)
+            'status' => 'idle',
+            'ready' => 0
         ]);
     }
 
@@ -1157,8 +1393,8 @@ class LobbyServer
                 case MessageType::MATCHMAKING_JOIN->value:
                     $this->handleMatchmakingJoin($this->wsServer, $fd, $data);
                     break;
-                case MessageType::MATCHMAKING_LEAVE->value:
-                    $this->handleMatchmakingLeave($this->wsServer, $fd, $data);
+                case MessageType::SET_READY->value:
+                    $this->handleSetReady($this->wsServer, $fd, $data);
                     break;
                 default:
                     $this->logger->warning("Unknown message type from client {$fd}: {$data['type']}");
@@ -1234,14 +1470,19 @@ class LobbyServer
 
     private function startCleanupTimer(): void
     {
-        // Check for inactive game servers every 30 seconds
-        \OpenSwoole\Timer::tick(30000, function() {
+        if ($this->cleanupTimer) {
+            return;
+        }
+
+        $this->cleanupTimer = \OpenSwoole\Timer::tick(self::SERVER_CHECK_INTERVAL, function () {
             $currentTime = time();
-            foreach ($this->gameServersTable as $key => $server) {
-                // Remove server if no ping received in last 60 seconds
-                if ($currentTime - $server['last_ping'] > 60) {
-                    $this->gameServersTable->del($key);
-                    $this->logger->info("Game server {$key} removed due to inactivity");
+            $inactiveThreshold = 30; // 30 seconds
+
+            foreach ($this->gameServersTable as $serverId => $server) {
+                $lastPing = $server['last_ping'] ?? 0;
+                if ($currentTime - $lastPing > $inactiveThreshold) {
+                    $this->logger->warning("Game server {$serverId} is inactive, removing...");
+                    $this->gameServersTable->del($serverId);
                 }
             }
         });
@@ -1249,68 +1490,104 @@ class LobbyServer
 
     private function sendToGameServer(string $ip, int $port, array $message): ?array
     {
-        try {
-            $client = new \OpenSwoole\Client(SWOOLE_SOCK_TCP);
-            $client->set([
-                'open_length_check' => true,
-                'package_length_type' => 'N',
-                'package_length_offset' => 0,
-                'package_body_offset' => 4,
-                'package_max_length' => 8 * 1024 * 1024,
-                'socket_buffer_size' => 8 * 1024 * 1024,
-                'buffer_output_size' => 8 * 1024 * 1024,
-                'tcp_nodelay' => true,
-                'tcp_keepalive' => true
-            ]);
+        $maxRetries = 3;
+        $retryDelay = 1; // seconds
+        $attempt = 0;
 
-            if (!$client->connect($ip, $port, 5)) {
-                $this->logger->error("Failed to connect to game server {$ip}:{$port}");
-                return null;
-            }
+        while ($attempt < $maxRetries) {
+            $client = null;
+            try {
+                $client = new \OpenSwoole\Client(SWOOLE_SOCK_TCP);
+                $client->set([
+                    'open_length_check' => true,
+                    'package_length_type' => 'N',
+                    'package_length_offset' => 0,
+                    'package_body_offset' => 4,
+                    'package_max_length' => 8 * 1024 * 1024,
+                    'socket_buffer_size' => 8 * 1024 * 1024,
+                    'buffer_output_size' => 8 * 1024 * 1024,
+                    'tcp_nodelay' => true,
+                    'tcp_keepalive' => true,
+                    'connect_timeout' => 5,
+                    'recv_timeout' => 5,
+                    'send_timeout' => 5
+                ]);
 
-            $json = json_encode($message);
-            if ($json === false) {
-                $this->logger->error("Failed to encode message: " . json_last_error_msg());
-                $client->close();
-                return null;
-            }
-
-            // Add length prefix (4 bytes)
-            $packed = pack('N', strlen($json)) . $json;
-            
-            $this->logger->debug("Sending to game server {$ip}:{$port}: " . $json);
-            
-            if (!$client->send($packed)) {
-                $this->logger->error("Failed to send message to game server");
-                $client->close();
-                return null;
-            }
-
-            // Wait for response with timeout
-            $startTime = microtime(true);
-            $timeout = 5.0; // 5 seconds timeout
-            
-            while (microtime(true) - $startTime < $timeout) {
-                $response = $client->recv(100000); // 100ms timeout in microseconds
-                if ($response !== false) {
-                    // Extract the JSON part (skip the 4-byte length prefix)
-                    $json = substr($response, 4);
-                    $data = json_decode($json, true);
-                    if ($data !== null) {
-                        $client->close();
-                        return $data;
+                if (!$client->connect($ip, $port, 5)) {
+                    $this->logger->error("Failed to connect to game server {$ip}:{$port} (attempt " . ($attempt + 1) . "/{$maxRetries})");
+                    $attempt++;
+                    if ($attempt < $maxRetries) {
+                        sleep($retryDelay);
+                        continue;
                     }
+                    return null;
                 }
-                usleep(100000); // Sleep for 100ms to prevent busy waiting
-            }
 
-            $this->logger->error("Timeout waiting for response from game server");
-            $client->close();
-            return null;
-        } catch (Exception $e) {
-            $this->logger->error("Error sending to game server: " . $e->getMessage());
-            return null;
+                $json = json_encode($message);
+                if ($json === false) {
+                    $this->logger->error("Failed to encode message: " . json_last_error_msg());
+                    $client->close();
+                    return null;
+                }
+
+                // Add length prefix (4 bytes)
+                $packed = pack('N', strlen($json)) . $json;
+                
+                $this->logger->debug("Sending to game server {$ip}:{$port}: " . $json);
+                
+                if (!$client->send($packed)) {
+                    $this->logger->error("Failed to send message to game server (attempt " . ($attempt + 1) . "/{$maxRetries})");
+                    $client->close();
+                    $attempt++;
+                    if ($attempt < $maxRetries) {
+                        sleep($retryDelay);
+                        continue;
+                    }
+                    return null;
+                }
+
+                // Wait for response with timeout
+                $startTime = microtime(true);
+                $timeout = 5.0; // 5 seconds timeout
+                $response = null;
+                
+                while (microtime(true) - $startTime < $timeout) {
+                    $data = $client->recv(100000); // 100ms timeout in microseconds
+                    if ($data !== false) {
+                        // Extract the JSON part (skip the 4-byte length prefix)
+                        $json = substr($data, 4);
+                        $response = json_decode($json, true);
+                        if ($response !== null) {
+                            $client->close();
+                            return $response;
+                        }
+                    }
+                    usleep(100000); // Sleep for 100ms to prevent busy waiting
+                }
+
+                $this->logger->error("Timeout waiting for response from game server (attempt " . ($attempt + 1) . "/{$maxRetries})");
+                $client->close();
+                $attempt++;
+                if ($attempt < $maxRetries) {
+                    sleep($retryDelay);
+                    continue;
+                }
+                return null;
+            } catch (Exception $e) {
+                $this->logger->error("Error sending to game server (attempt " . ($attempt + 1) . "/{$maxRetries}): " . $e->getMessage());
+                if ($client) {
+                    $client->close();
+                }
+                $attempt++;
+                if ($attempt < $maxRetries) {
+                    sleep($retryDelay);
+                    continue;
+                }
+                return null;
+            }
         }
+
+        return null;
     }
 
     private function sendError(\OpenSwoole\WebSocket\Server $server, int $fd, string $message): void
@@ -1343,32 +1620,40 @@ class LobbyServer
                 throw new Exception("Room not found");
             }
 
+            if ($room['status'] !== 'waiting') {
+                throw new Exception("Cannot change ready status - game already in progress");
+            }
+
             $ready = (bool)$message['data']['ready'];
             $userId = $client['user_id'];
             $username = $client['username'];
 
-            // Get current player data or initialize new player data
-            $player = $this->playersTable->get($userId) ?: [
-                'id' => $userId,
-                'user_id' => $userId,
-                'username' => $username,
-                'room_id' => $roomId,
-                'status' => 'waiting'
-            ];
+            // Update client's ready status
+            $client['ready'] = $ready ? 1 : 0;
+            $client['status'] = $ready ? 'ready' : 'not_ready';
+            $this->clientsTable->set($fd, $client);
 
-            // Update player's ready status
-            $player['status'] = $ready ? 'ready' : 'waiting';
-            $this->playersTable->set($userId, $player);
+            // Get all players in the room
+            $players = [];
+            foreach ($this->clientsTable as $clientFd => $clientInfo) {
+                if ($clientInfo['room_id'] == $roomId) {
+                    $players[] = [
+                        'user_id' => $clientInfo['user_id'],
+                        'username' => $clientInfo['username'],
+                        'status' => $clientInfo['status'] ?? 'not_ready',
+                        'ready' => $clientInfo['ready'] ?? 0
+                    ];
+                }
+            }
 
-            // Notify other players in the room
+            // Notify all players in the room about the ready status change
             $this->notifyRoomPlayers($server, $roomId, [
-                'type' => $ready ? MessageType::PLAYER_READY->value : MessageType::PLAYER_NOT_READY->value,
+                'type' => 'player_ready_status',
                 'room_id' => $roomId,
-                'player_id' => $userId,
-                'player_name' => $username
+                'players' => $players
             ]);
 
-            // Send confirmation to the player
+            // Send confirmation to the player who changed their status
             $server->push($fd, json_encode([
                 'type' => MessageType::SET_READY->value,
                 'success' => true,
@@ -1377,17 +1662,25 @@ class LobbyServer
 
             $this->logger->info("Player {$userId} ({$username}) set ready status to " . ($ready ? 'ready' : 'not ready') . " in room {$roomId}");
 
-            // Check if all players are ready
-            $allReady = true;
-            foreach ($this->playersTable as $player) {
-                if ($player['room_id'] == $roomId && $player['status'] !== 'ready') {
-                    $allReady = false;
-                    break;
+            // Check if all players are ready and room is full
+            if ($room['player_count'] >= self::DEFAULT_ROOM_SIZE) {
+                $allReady = true;
+                foreach ($players as $player) {
+                    if (!($player['ready'] ?? 0)) {
+                        $allReady = false;
+                        break;
+                    }
                 }
-            }
 
-            if ($allReady && $room['player_count'] >= 2) {
-                $this->startGame($server, $roomId);
+                if ($allReady) {
+                    // If room is not yet created on game server, create it first
+                    if ($room['game_server_id'] === 0) {
+                        $this->createRoomOnGameServer($server, $roomId, $players);
+                    } else {
+                        // If room is already created on game server, start the game
+                        $this->startGame($server, $roomId);
+                    }
+                }
             }
         } catch (Exception $e) {
             $this->logger->error("Error handling set ready: " . $e->getMessage());
@@ -1404,8 +1697,89 @@ class LobbyServer
 
         foreach ($this->clientsTable as $fd => $client) {
             if ($client['room_id'] == $roomId && !in_array($client['user_id'], $excludePlayers)) {
-                $server->push($fd, json_encode($message));
+                if ($server->isEstablished($fd)) {
+                    try {
+                        $server->push($fd, json_encode($message));
+                    } catch (Exception $e) {
+                        $this->logger->error("Error sending message to client {$fd}: " . $e->getMessage());
+                        // If we can't send to this client, they might be disconnected
+                        // Clean up their state
+                        $this->handleMatchmakingLeave($server, $fd, [
+                            'type' => MessageType::MATCHMAKING_LEAVE->value
+                        ]);
+                    }
+                } else {
+                    // Client is not connected, clean up their state
+                    $this->handleMatchmakingLeave($server, $fd, [
+                        'type' => MessageType::MATCHMAKING_LEAVE->value
+                    ]);
+                }
             }
+        }
+    }
+
+    private function startGame($server, string $roomId): void
+    {
+        try {
+            $room = $this->roomsTable->get($roomId);
+            if (!$room) {
+                throw new Exception("Room not found");
+            }
+
+            if ($room['game_server_id'] === 0) {
+                throw new Exception("Room not created on game server");
+            }
+
+            $gameServer = $this->gameServersTable->get($room['game_server_id']);
+            if (!$gameServer) {
+                throw new Exception("Game server not found");
+            }
+
+            $request = [
+                'type' => 'start_game',
+                'room_id' => $room['game_server_room_id'] // Use the game server room ID
+            ];
+
+            $this->logger->debug("Sending to game server {$gameServer['ip']}:{$gameServer['port']}: " . json_encode($request));
+            
+            $response = $this->sendToGameServer($gameServer['ip'], $gameServer['port'], $request);
+            if (!$response) {
+                throw new Exception("Failed to start game on game server");
+            }
+
+            if ($response['type'] !== 'game_started') {
+                throw new Exception("Game server returned error: " . ($response['error'] ?? 'Unknown error'));
+            }
+
+            // Update room status
+            $room['status'] = 'playing';
+            $this->roomsTable->set($roomId, $room);
+
+            // Notify all players that the game has started
+            // foreach ($this->clientsTable as $clientFd => $clientInfo) {
+            //     if ($clientInfo['room_id'] == $roomId) {
+            //         $server->push($clientFd, json_encode([
+            //             'type' => 'game_started',
+            //             'room_id' => $roomId,
+            //             'game_state' => $response['game_state'] ?? null
+            //         ]));
+            //     }
+            // }
+
+            $this->notifyRoomPlayers($server, $roomId, [
+                'type' => 'game_started',
+                'room_id' => $roomId,
+                'game_state' => $response['game_state'] ?? null
+            ]);
+
+            $this->logger->info("Game started for room {$roomId} on game server {$gameServer['id']}");
+        } catch (Exception $e) {
+            $this->logger->error("Failed to start game on game server for room: {$roomId}");
+            $this->notifyRoomPlayers($server, $roomId, [
+                'type' => 'error',
+                'message' => 'Failed to start game: ' . $e->getMessage()
+            ]);
+            throw $e;
         }
     }
 }

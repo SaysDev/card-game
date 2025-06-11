@@ -1,5 +1,5 @@
 import '../css/app.css';
-
+import 'vue3-toastify/dist/index.css';
 import { createInertiaApp } from '@inertiajs/vue3';
 import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
 import type { DefineComponent } from 'vue';
@@ -8,6 +8,7 @@ import { ZiggyVue } from 'ziggy-js';
 import TooltipDirective from './directives/tooltip';
 import { initializeTheme } from './composables/useAppearance';
 
+import Vue3Toastify, { type ToastContainerOptions } from 'vue3-toastify';
 // Extend ImportMeta interface for Vite...
 declare module 'vite/client' {
     interface ImportMetaEnv {
@@ -26,6 +27,7 @@ app.directive('tooltip', TooltipDirective);
 
 const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
 
+
 createInertiaApp({
     title: (title) => `${title} - ${appName}`,
     resolve: (name) => resolvePageComponent(`./pages/${name}.vue`, import.meta.glob<DefineComponent>('./pages/**/*.vue')),
@@ -33,6 +35,12 @@ createInertiaApp({
         createApp({ render: () => h(App, props) })
             .use(plugin)
             .use(ZiggyVue)
+            .use(Vue3Toastify,
+                {
+                  autoClose: 2000,
+                  theme: "dark",
+                  position: "top-center",
+                } as ToastContainerOptions,)
             .mount(el);
     },
     progress: {

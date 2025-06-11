@@ -1,4 +1,6 @@
 import { useAuth } from "@/composables/useAuth";
+import { MessageType } from "@/types/messageTypes";
+import { reactive } from 'vue';
 
 interface GameMessage {
     type: string;
@@ -12,7 +14,45 @@ interface GameMessage {
     user_id?: number;
     username?: string;
     room_id?: number;
+    exp?: number;
     [key: string]: any;
+}
+
+interface Player {
+  user_id: number;
+  username: string;
+  status: 'ready' | 'not_ready' | 'waiting';
+  ready: boolean;
+  score: number;
+  cards_count: number;
+}
+
+export const gameState = reactive({
+  isAuthenticated: false,
+  roomId: null as string | null,
+  roomName: null as string | null,
+  status: 'waiting' as 'waiting' | 'playing' | 'ended',
+  players: [] as Player[],
+  currentTurn: 0,
+  currentPlayerId: null as number | null,
+  hand: [] as any[],
+  playArea: [] as any[],
+  lastCard: null as any,
+  deckCount: 0,
+  isYourTurn: false,
+  winner: null as { username: string } | null
+});
+
+// Utility function to standardize player object format
+export function standardizePlayerObject(player: any): Player {
+  return {
+    user_id: player.user_id ?? player.id ?? 0,
+    username: player.username ?? player.name ?? 'Gracz',
+    status: player.status === 'ready' ? 'ready' : 'not_ready',
+    ready: player.ready ?? player.status === 'ready',
+    score: player.score ?? 0,
+    cards_count: player.cards_count ?? (player.cards ? player.cards.length : 0)
+  };
 }
 
 export class WebSocketService {
@@ -24,6 +64,9 @@ export class WebSocketService {
     private reconnectDelay: number = 1000;
     private isConnecting: boolean = false;
     private debug: boolean = true;
+    private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+    private tokenRefreshInterval: ReturnType<typeof setInterval> | null = null;
+    private tokenExpirationTime: number | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -74,6 +117,7 @@ export class WebSocketService {
             try {
                 this.socket = new WebSocket(url);
                 this.setupSocketListeners(resolve, reject);
+                this.setupKeepAlive();
             } catch (error) {
                 this.isConnecting = false;
                 this.error('Failed to create WebSocket connection', error);
@@ -87,6 +131,8 @@ export class WebSocketService {
             this.log('Disconnecting...');
             this.socket.close();
             this.socket = null;
+            this.clearKeepAlive();
+            this.clearTokenRefresh();
         }
     }
 
@@ -105,7 +151,7 @@ export class WebSocketService {
 
     public joinMatchmaking(): void {
         this.send({
-            type: 'matchmaking_join'
+            type: MessageType.MATCHMAKING_JOIN
         });
     }
 
@@ -131,38 +177,135 @@ export class WebSocketService {
         this.socket.send(message);
     }
 
+    private async handleExpiredToken(): Promise<void> {
+        this.log('Handling expired token');
+        try {
+            // First try to get a new token directly from the server
+            const response = await fetch('/api/ws/token', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                credentials: 'include' // Important for session cookies
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to get new token');
+            }
+
+            const data = await response.json();
+            if (!data.token) {
+                throw new Error('No token in response');
+            }
+
+            // Update token in auth store
+            const { user } = useAuth();
+            if (user.value) {
+                user.value.ws_token = data.token;
+            }
+
+            // After successful token refresh, reconnect
+            if (this.socket) {
+                this.socket.close();
+                await this.connect();
+            }
+        } catch (error) {
+            this.error('Failed to handle expired token', error);
+            // If token refresh fails, redirect to login
+            window.location.href = '/login';
+        }
+    }
+
+    private async refreshToken(): Promise<void> {
+        try {
+            // First try to get a new token directly
+            const response = await fetch('/api/ws/token', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                credentials: 'include' // Important for session cookies
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to get new token');
+            }
+
+            const data = await response.json();
+            if (!data.token) {
+                throw new Error('No token in response');
+            }
+
+            // Update token in auth store
+            const { user } = useAuth();
+            if (user.value) {
+                user.value.ws_token = data.token;
+            }
+            this.log('Token refreshed successfully');
+        } catch (error) {
+            this.error('Failed to refresh token', error);
+            throw error; // Re-throw to handle in caller
+        }
+    }
+
+    private setupTokenRefresh(expirationTime: number): void {
+        this.clearTokenRefresh();
+        this.tokenExpirationTime = expirationTime;
+
+        // Refresh token 5 minutes before expiration
+        const refreshTime = (expirationTime - 300) * 1000; // Convert to milliseconds
+        const now = Date.now();
+        const timeUntilRefresh = Math.max(0, refreshTime - now);
+
+        this.tokenRefreshInterval = setTimeout(() => {
+            this.refreshToken();
+        }, timeUntilRefresh);
+    }
+
+    private clearTokenRefresh(): void {
+        if (this.tokenRefreshInterval) {
+            clearTimeout(this.tokenRefreshInterval);
+            this.tokenRefreshInterval = null;
+        }
+        this.tokenExpirationTime = null;
+    }
+
     private setupSocketListeners(resolve: () => void, reject: (error: any) => void): void {
         if (!this.socket) return;
 
-        this.socket.onopen = () => {
+        this.socket.onopen = async () => {
             this.log('Connection established');
             this.reconnectAttempts = 0;
             this.isConnecting = false;
+            this.setupKeepAlive();
 
             try {
+                // Get a fresh token before authenticating
+                await this.refreshToken();
                 const { user } = useAuth();
-                this.log('Authenticating with user', user);
-
-                if (user && user.id) {
-                    this.send({
-                        type: 'auth',
-                        token: user.ws_token || ''
-                    });
-                    this.log('Authentication message sent');
-                } else {
-                    this.error('No valid user found for authentication');
+                
+                if (!user.value) {
+                    throw new Error('No valid user found for authentication');
                 }
-            } catch (error) {
-                this.error('Error during authentication', error);
-            }
 
-            resolve();
+                this.send({
+                    type: MessageType.AUTH,
+                    token: user.value.ws_token
+                });
+                this.log('Authentication message sent');
+                resolve();
+            } catch (error) {
+                this.error('Failed to get token for authentication', error);
+                reject(error);
+            }
         };
 
         this.socket.onclose = (event) => {
             this.log(`Connection closed. Code: ${event.code}, Reason: ${event.reason}`);
             this.isConnecting = false;
             this.handleReconnect();
+            this.clearKeepAlive();
+            this.clearTokenRefresh();
         };
 
         this.socket.onerror = (error) => {
@@ -176,8 +319,19 @@ export class WebSocketService {
                 const data = JSON.parse(event.data) as GameMessage;
                 this.log('Received message', data);
                 
-                if (data.type === 'auth_success') {
+                if (data.type === MessageType.AUTH_SUCCESS) {
                     this.log('Authentication successful', data);
+                    // Setup token refresh if expiration time is provided
+                    if (data.exp) {
+                        this.setupTokenRefresh(data.exp);
+                    }
+                } else if (data.type === MessageType.ERROR) {
+                    this.error('Server error', data.message);
+                    
+                    // Handle expired token error
+                    if (data.message?.includes('Expired token')) {
+                        this.handleExpiredToken();
+                    }
                 }
                 
                 const handlers = this.messageHandlers.get(data.type);
@@ -192,10 +346,6 @@ export class WebSocketService {
                     });
                 } else {
                     this.log(`No handlers registered for event: ${data.type}`);
-                }
-
-                if (data.type === 'error') {
-                    this.error('Server error', data.message);
                 }
             } catch (error) {
                 this.error('Failed to parse WebSocket message', error);
@@ -220,6 +370,26 @@ export class WebSocketService {
 
     public setDebug(enabled: boolean): void {
         this.debug = enabled;
+    }
+
+    private setupKeepAlive(): void {
+        this.clearKeepAlive();
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.keepAliveInterval = setInterval(() => {
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.send({ type: 'ping' });
+                    this.log('Sent keepalive ping');
+                }
+            }, 30000); // 30 seconds
+        }
+    }
+
+    private clearKeepAlive(): void {
+        if (this.keepAliveInterval) {
+            clearInterval(this.keepAliveInterval);
+            this.keepAliveInterval = null;
+            this.log('Cleared keepalive interval');
+        }
     }
 }
 

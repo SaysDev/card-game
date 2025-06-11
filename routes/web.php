@@ -1,9 +1,10 @@
 <?php
 
-use App\Http\Controllers\GameController;
-use App\Http\Controllers\ProfileController;
-use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\GameController;
+use App\Http\Controllers\WebSocketAuthController;
+use App\Http\Controllers\Settings\ProfileController;
 
 /*
 |--------------------------------------------------------------------------
@@ -20,9 +21,14 @@ Route::get('/', function () {
     return Inertia::render('Welcome');
 })->name('home');
 
-Route::get('/dashboard', function () {
-    return Inertia::render('Dashboard');
-})->middleware(['auth', 'verified'])->name('dashboard');
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('/dashboard', function () {
+        return Inertia::render('Dashboard');
+    })->name('dashboard');
+
+    Route::get('/game', [GameController::class, 'index'])->name('game.index');
+    Route::get('/game/{id}', [GameController::class, 'show'])->name('game.show');
+});
 
 // Game routes
 Route::middleware(['auth'])->group(function () {
@@ -57,3 +63,33 @@ require __DIR__.'/settings.php';
 Route::get('/lobby', function () {
     return Inertia::render('Lobby');
 })->middleware(['auth']);
+
+// Game table route
+Route::get('/game/table', function () {
+    return Inertia::render('game/Table');
+})->middleware(['auth'])->name('game.table');
+
+Route::get('/menu', function () {
+    return Inertia::render('game/Home');
+})->name('mobile.home');
+
+Route::get('/events', function () {
+    return Inertia::render('game/Events');
+})->name('mobile.events');
+
+Route::get('/clubs', function () {
+    return Inertia::render('game/Clubs');
+})->name('mobile.clubs');
+
+Route::get('/friends', function () {
+    return Inertia::render('game/Friends');
+})->name('mobile.friends');
+
+Route::get('/shop', function () {
+    return Inertia::render('game/Shop');
+})->name('mobile.shop');
+
+Route::middleware('auth')->group(function () {
+    Route::get('/api/ws/token', [WebSocketAuthController::class, 'getToken']);
+    Route::post('/api/ws/token/refresh', [WebSocketAuthController::class, 'refreshToken']);
+}); 

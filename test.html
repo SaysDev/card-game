@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Card Clash: Edycja Pana (Vue.js)</title>
+    
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Bangers&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
+
+</head>
+<body>
+    <div id="app" class="phone-frame">
+        <div class="phone-screen">
+            <div class="phone-notch"></div>
+            
+            <transition>
+                 <div v-if="screen === 'loader'" class="game-screen z-50 flex flex-col items-center justify-center bg-dynamic-screen text-white p-8">
+                    <div class="flex-grow flex items-center justify-center">
+                        <h1 class="font-bangers text-6xl text-white" style="text-shadow: 0 0 15px #ff512f, 0 0 25px #dd2476;">Card Clash</h1>
+                    </div>
+                    <div class="w-full max-w-xs mt-auto">
+                        <div class="w-full bg-black/30 rounded-full h-2.5 border border-white/10">
+                            <div class="progress-bar bg-gradient-to-r from-pink-500 to-orange-500 h-full rounded-full" :style="{ width: loadingProgress + '%' }"></div>
+                        </div>
+                        <p class="text-center text-sm text-gray-300 mt-2 h-5">{{ loadingStatusText }}</p>
+                    </div>
+                </div>
+            </transition>
+            
+            <transition>
+                <div v-if="screen === 'menu'" class="game-screen z-40 flex flex-col bg-dynamic-screen text-white">
+                    <div class="p-4 flex flex-col flex-grow h-full relative">
+                         <!-- Top Bar: Player Info + Resources -->
+                        <div class="flex justify-between items-center glass-bar p-2 rounded-full mt-8">
+                            <div class="flex items-center gap-2"><div class="w-12 h-12 rounded-full bg-purple-900 border-2 border-purple-500 flex items-center justify-center text-3xl flex-shrink-0">🧑‍💻</div><div><h2 class="font-bold text-md leading-tight">Gracz123</h2><div class="w-full bg-gray-900/50 rounded-full h-1.5 mt-1"><div class="bg-yellow-400 h-1.5 rounded-full" style="width: 45%"></div></div></div></div>
+                            <div class="flex items-center gap-1 flex-shrink-0"><div class="resource-item flex items-center p-1 pr-2 rounded-full"><svg class="w-6 h-6 text-yellow-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-12h2v4h-2zm0 6h2v2h-2z" opacity="0.5"/><path d="M12 4c-4.41 0-8 3.59-8 8s3.59 8 8 8 8-3.59 8-8-3.59-8-8-8zm0 1.5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5S10.5 8.33 10.5 7.5 11.17 6 12 6zm4 10.5H8v-1.53c0-.66.27-1.26.7-1.7l1.76-1.76c.44-.44 1.04-.71 1.69-.71s1.25.27 1.69.71l1.76 1.76c.43.44.7 1.04.7 1.7V16.5z"/></svg><span class="font-bold text-sm ml-1">12K</span></div><div class="resource-item flex items-center p-1 pr-2 rounded-full"><svg class="w-6 h-6 text-purple-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5-10-5-10 5z" opacity="0.5"/><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5-10-5-10 5zM2 12l10 5 10-5-10-5-10 5z"/></svg><span class="font-bold text-sm ml-1">500</span></div></div>
+                        </div>
+
+                        <!-- Left Floating Buttons -->
+                        <div v-if="activeTab === 'home'" class="absolute left-2 top-1/4 flex flex-col gap-3 z-20">
+                            <button @click="alert('Poczta')" class="floating-btn"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg><div class="notification-dot"></div></button>
+                            <button @click="alert('Nagrody')" class="floating-btn"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></button>
+                        </div>
+
+                        <!-- Right Floating Buttons -->
+                         <div v-if="activeTab === 'home'" class="absolute right-2 top-1/4 flex flex-col gap-3 z-20">
+                            <button @click="alert('Oferty')" class="floating-btn"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197M4 19a4 4 0 110-5.292"></path></svg><div class="notification-dot"></div></button>
+                            <button @click="alert('Ustawienia')" class="floating-btn"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg></button>
+                        </div>
+
+                        <!-- Main Content Area: Dynamic based on active tab -->
+                        <div class="flex-grow flex flex-col items-center justify-center relative w-full h-full">
+                            <transition-group name="v">
+                                <div v-if="activeTab === 'home'" key="home" class="absolute inset-0 flex flex-col items-center justify-center gap-6">
+                                    <button @click="startGameFlow" class="play-btn play-now-btn font-montserrat text-3xl font-bold rounded-2xl w-60 h-24 flex flex-col items-center justify-center mt-10">GRAJ TERAZ</button>
+                                    <button class="play-btn tournament-btn font-montserrat text-3xl font-bold rounded-2xl w-60 h-24 flex flex-col items-center justify-center">TURNIEJ</button>
+                                </div>
+                                <div v-if="activeTab === 'events'" key="events" class="w-full h-full p-4"><h2 class="text-3xl font-bold text-center mb-4">Wydarzenia</h2><div class="space-y-4"><div class="p-4 rounded-lg bg-black/20"><h3 class="font-bold text-lg text-yellow-400">Festiwal Królowej</h3><p class="text-sm opacity-80">Zagraj 10 Dam, aby odblokować nagrody!</p></div><div class="p-4 rounded-lg bg-black/20"><h3 class="font-bold text-lg text-green-400">Weekendowa Passa</h3><p class="text-sm opacity-80">Wygraj 5 gier z rzędu.</p></div></div></div>
+                                </transition-group>
+                        </div>
+                    </div>
+                    <!-- Bottom Navigation Bar -->
+                    <div class="flex justify-around items-center p-2 rounded-t-2xl glass-bar mt-auto">
+                        <button @click="activeTab = 'home'" class="nav-item flex flex-col items-center text-center w-20" :class="{ 'active': activeTab === 'home' }"><svg class="w-8 h-8 nav-icon" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"></path></svg><span class="text-xs font-bold">Graj</span></button>
+                        <button @click="activeTab = 'events'" class="nav-item flex flex-col items-center text-center w-20 relative" :class="{ 'active': activeTab === 'events' }"><svg class="w-8 h-8 nav-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V8h14m-3-7v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19a2 2 0 002 2h14a2 2 0 002-2V5c0-1.1-.9-2-2-2h-1V1m-1 11h-5v5h5v-5z"/></svg><span class="text-xs font-bold">Wydarzenia</span><div class="notification-dot"></div></button>
+                        <button @click="activeTab = 'rankings'" class="nav-item flex flex-col items-center text-center w-20" :class="{ 'active': activeTab === 'rankings' }"><svg class="w-8 h-8 nav-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 14h4v7H4zm6 0h4v7h-4zm6 3h4v4h-4zM4 3h4v10H4zm6 0h4v5h-4zm6 0h4v3h-4z"/></svg><span class="text-xs font-bold">Ranking</span></button>
+                        <button @click="activeTab = 'friends'" class="nav-item flex flex-col items-center text-center w-20" :class="{ 'active': activeTab === 'friends' }"><svg class="w-8 h-8 nav-icon" fill="currentColor" viewBox="0 0 24 24"><path d="M12 5.5A3.5 3.5 0 0115.5 9a3.5 3.5 0 01-3.5 3.5A3.5 3.5 0 018.5 9 3.5 3.5 0 0112 5.5M5 8.5A3.5 3.5 0 018.5 12a3.5 3.5 0 01-3.5 3.5A3.5 3.5 0 011.5 12 3.5 3.5 0 015 8.5m14 0a3.5 3.5 0 013.5 3.5 3.5 3.5 0 01-3.5 3.5A3.5 3.5 0 0115.5 12a3.5 3.5 0 013.5-3.5M12 14c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"></path></svg><span class="text-xs font-bold">Znajomi</span></button>
+                        <button @click="activeTab = 'shop'" class="nav-item flex flex-col items-center text-center w-20" :class="{ 'active': activeTab === 'shop' }"><svg class="w-8 h-8 nav-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11V3H8v6H2v12h20V11h-6zm-6-6h4v1h-4V5zm0 3h4v1h-4V8zM4 13h4v-1H4v1zm0 2h4v-1H4v1zm0 2h4v-1H4v1zm14 2h-4v-1h4v1zm0-2h-4v-1h4v1zm0-2h-4v-1h4v1z"/></svg><span class="text-xs font-bold">Sklep</span></button>
+                    </div>
+                </div>
+            </transition>
+
+            <!-- Other screens (matchmaking, game, game-over) are unchanged -->
+            <transition><div v-if="screen === 'matchmaking'" class="game-screen z-30 flex flex-col items-center justify-center p-4 bg-gray-900"><div class="text-center text-white"><h2 class="text-5xl font-bold text-white">Szukanie gry...</h2><p class="text-lg text-gray-400 mt-4">Przygotowuję stół...</p></div></div></transition>
+            <transition><div v-if="screen === 'game'" id="gameTableScreen" class="game-screen z-20 flex flex-col items-center justify-between p-2 bg-game-table"><div class="absolute inset-0"><player-pod v-for="player in players" :key="player.id" :player="player" :is-current-turn="player.id === currentPlayer.id" /></div><div class="w-full flex-grow flex flex-col items-center justify-center z-0"><discard-pile :cards="gameState.discardPile" /></div><div class="w-full flex flex-col items-center pb-4 z-10"><player-hand :cards="humanPlayer.hand" :is-turn="isHumanTurn" @card-played="handleCardPlay" /><div id="action-buttons" class="flex justify-center space-x-4 mt-2 w-full px-4"><button @click="playerPass" :disabled="!isHumanTurn || hasValidMove" class="action-button w-1/2 bg-gray-700 hover:bg-gray-600 text-white py-3 px-4"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>Pasuj</button></div></div></div></transition>
+            <transition><div v-if="screen === 'game-over'" class="game-screen z-50 flex flex-col items-center justify-center p-4 bg-black/70 backdrop-blur-sm"><div class="text-center text-white"><h2 id="gameOverMessage" class="text-5xl font-bold text-white">{{ gameOverMessage }}</h2><button @click="startGameFlow" class="w-full max-w-xs mx-auto mt-16 text-2xl text-white bg-green-600 rounded-xl py-3 shadow-lg">Zagraj Ponownie</button></div></div></transition>
+        </div>
+    </div>
+
+    <script>
+    const { createApp, ref, reactive, computed, onMounted } = Vue;
+
+    // --- Components (Card, PlayerHand, DiscardPile, PlayerPod) - UNCHANGED ---
+    const Card = {
+        props: ['card', 'style', 'is-invalid'],
+        template: `<div class="card" :class="[{'red': card.suit === '♥' || card.suit === '♦', 'black': card.suit === '♣' || card.suit === '♠'}, {'invalid-card': isInvalid}]" :style="style"><div class="w-full text-left text-lg font-sans font-bold">{{ card.rank }}</div><div class="text-4xl font-sans" v-html="card.suit"></div><div class="w-full text-right text-lg font-sans font-bold" style="transform: rotate(180deg);">{{ card.rank }}</div></div>`
+    };
+    const PlayerHand = {
+        components: { Card }, props: ['cards', 'isTurn'], emits: ['card-played'],
+        setup(props, { emit }) {
+            const getCardStyle = (index, count) => {
+                const baseOverlap = 35; const maxRotation = 15; const curveHeight = 15; const normalizedIndex = index - (count - 1) / 2;
+                const xOffset = normalizedIndex * baseOverlap; const rotation = normalizedIndex * maxRotation / ((count - 1) / 2 || 1); const yOffset = Math.abs(normalizedIndex) * curveHeight / ((count - 1) / 2 || 1);
+                const transform = `translateX(calc(-50% + ${xOffset}px)) translateY(${yOffset}px) rotate(${rotation}deg)`;
+                return {'--end-transform': transform, '--hover-transform': `translateX(calc(-50% + ${xOffset}px)) translateY(${yOffset - 30}px) rotate(${rotation}deg) scale(1.1)`, zIndex: index, animation: `deal-card 0.5s ease-out ${0.1 + index * 0.05}s forwards`};
+            };
+            const playCard = (card) => { emit('card-played', card); };
+            return { getCardStyle, playCard };
+        },
+        template: `<div class="player-hand w-full flex justify-center items-center"><card v-for="(card, index) in cards" :key="card.rank + card.suit" :card="card" :style="getCardStyle(index, cards.length)" :is-invalid="!card.isValid" @click="playCard(card)" /></div>`
+    };
+    const DiscardPile = {
+        components: { Card }, props: ['cards'],
+         setup() {
+            const getCardStyle = (cardData, index) => {
+                 const seed = (cardData.rank.charCodeAt(0) + cardData.suit.charCodeAt(0) + index) * 1.618;
+                 const rotation = Math.sin(seed) * 15; const xOffset = Math.cos(seed) * 30; const yOffset = Math.sin(index * 0.8) * 20;
+                 return { transform: `translate(-50%, -50%) translate(${xOffset}px, ${yOffset}px) rotate(${rotation}deg)`, zIndex: index };
+            };
+            return { getCardStyle };
+        },
+        template: `<div class="discard-pile"><card v-for="(card, index) in cards" :key="index" :card="card" :style="getCardStyle(card, index)" /></div>`
+    };
+    const PlayerPod = {
+        props: ['player', 'isCurrentTurn'],
+        setup(props) {
+            const positionClasses = { 0: 'bottom-32 left-1/2 -translate-x-1/2', 1: 'top-1/2 -translate-y-1/2 left-2', 2: 'top-20 left-1/2 -translate-x-1/2', 3: 'top-1/2 -translate-y-1/2 right-2' };
+            return { positionClass: positionClasses[props.player.id] };
+        },
+        template: `<div class="player-pod absolute flex flex-col items-center gap-1" :class="[positionClass, {'is-turn': isCurrentTurn}]"><div class="relative avatar-container w-16 h-16 rounded-full border-4 border-green-700 flex items-center justify-center text-3xl bg-gray-600 z-10">{{ player.avatar }}<div class="card-count absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center border-2 border-white">{{ player.hand.length }}</div></div><div class="text-center text-white bg-black/30 px-2 py-1 rounded-lg"><p class="font-semibold text-sm leading-tight">{{ player.name }}</p></div></div>`
+    };
+
+    // --- Main App ---
+    createApp({
+        components: { PlayerHand, DiscardPile, PlayerPod },
+        setup() {
+            const screen = ref('loader');
+            const activeTab = ref('home'); 
+            const loadingProgress = ref(0);
+            const loadingStatusText = ref('Inicjalizacja...');
+            const gameState = reactive({ players: [], currentPlayerIndex: 0, discardPile: [], deck: [] });
+            const gameOverMessage = ref('');
+            const players = computed(() => gameState.players);
+            const humanPlayer = computed(() => gameState.players.find(p => p.isHuman) || { hand: [] });
+            const currentPlayer = computed(() => gameState.players[gameState.currentPlayerIndex] || {});
+            const isHumanTurn = computed(() => currentPlayer.value.isHuman);
+            const isMoveValid = (card) => { const topCard = gameState.discardPile[gameState.discardPile.length - 1]; if (!topCard) return true; return card.rank === topCard.rank || card.suit === topCard.suit; };
+            const hasValidMove = computed(() => { if (!isHumanTurn.value) return false; return humanPlayer.value.hand.some(isMoveValid); });
+            const changeScreen = (newScreen) => { screen.value = newScreen; };
+            const startGameFlow = () => { changeScreen('matchmaking'); setTimeout(() => { setupNewGame(); changeScreen('game'); }, 2000); };
+            const setupNewGame = () => {
+                const createdPlayers = [ { id: 0, name: 'Ty', avatar: '🧑‍💻', hand: [], isHuman: true }, { id: 1, name: 'Mark K.', avatar: '🧑‍🚀', hand: [], isHuman: false }, { id: 2, name: 'Kevin J.', avatar: '🦹‍♀️', hand: [], isHuman: false }, { id: 3, name: 'Helen J.', avatar: '🤖', hand: [], isHuman: false } ];
+                const suits = ['♥', '♦', '♣', '♠']; const ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']; let deck = [];
+                for (const suit of suits) for (const rank of ranks) deck.push({ rank, suit });
+                for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+                for (let i = 0; i < 5; i++) for (let p of createdPlayers) p.hand.push(deck.pop());
+                gameState.players = createdPlayers; gameState.currentPlayerIndex = 0; gameState.discardPile = [deck.pop()]; gameState.deck = deck;
+                updateValidCards();
+            };
+            const advanceTurn = () => { gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % gameState.players.length; updateValidCards(); if (!isHumanTurn.value) { setTimeout(playBotTurn, 1500); } };
+            const updateValidCards = () => { humanPlayer.value.hand.forEach(card => { card.isValid = isMoveValid(card); }); };
+            const playCard = (player, cardData) => {
+                const cardIndex = player.hand.findIndex(c => c.rank === cardData.rank && c.suit === cardData.suit);
+                if (cardIndex > -1) { const [playedCard] = player.hand.splice(cardIndex, 1); gameState.discardPile.push(playedCard); if(player.hand.length === 0) return endGame(player); advanceTurn(); }
+            };
+            const handleCardPlay = (card) => { if(!isHumanTurn.value || !isMoveValid(card)) return; playCard(humanPlayer.value, card); };
+            const handlePass = (player) => { if (gameState.deck.length > 0) { player.hand.push(gameState.deck.pop()); } };
+            const playerPass = () => { if(!isHumanTurn.value || hasValidMove.value) { if (hasValidMove.value) alert("Masz kartę do zagrania!"); return; } handlePass(humanPlayer.value); updateValidCards(); advanceTurn(); };
+            const playBotTurn = () => { const bot = currentPlayer.value; const validCard = bot.hand.find(isMoveValid); if (validCard) { playCard(bot, validCard); } else { handlePass(bot); advanceTurn(); } };
+            const endGame = (winner) => { gameOverMessage.value = winner.isHuman ? "Wygrałeś!" : `${winner.name} wygrał!`; changeScreen('game-over'); }
+            
+            onMounted(() => {
+                const loadingInterval = setInterval(() => {
+                    loadingProgress.value += 2;
+                    if (loadingProgress.value >= 20 && loadingProgress.value < 60) {
+                        loadingStatusText.value = 'Sprawdzanie aktualizacji...';
+                    } else if (loadingProgress.value >= 60 && loadingProgress.value < 90) {
+                        loadingStatusText.value = 'Pobieranie zasobów...';
+                    } else if (loadingProgress.value >= 90) {
+                        loadingStatusText.value = 'Przygotowywanie stołu...';
+                    }
+
+                    if (loadingProgress.value >= 100) {
+                        clearInterval(loadingInterval);
+                        setTimeout(() => {
+                            changeScreen('menu');
+                        }, 500);
+                    }
+                }, 60);
+            });
+            return { screen, activeTab, loadingProgress, loadingStatusText, gameState, players, currentPlayer, humanPlayer, isHumanTurn, hasValidMove, gameOverMessage, startGameFlow, handleCardPlay, playerPass };
+        }
+    }).mount('#app');
+    </script>
+</body>
+</html>

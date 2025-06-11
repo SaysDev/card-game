@@ -7,21 +7,33 @@ export interface User {
   ws_token: string;
 }
 
+interface PageProps {
+  auth: {
+    user: User;
+  };
+  [key: string]: any;
+}
+
 export function useAuth() {
-  const user = usePage()?.props?.auth?.user;
+  const page = usePage<PageProps>();
+  const user = ref<User | null>(page.props.auth?.user || null);
   const isLoggedIn = computed(() => !!user.value);
 
   const getAuthenticatedUser = () => {
-    const authUser = usePage()?.props?.auth?.user;
+    const authUser = page.props.auth?.user;
     if (authUser) {
       user.value = {
         id: authUser.id,
         name: authUser.name,
         ws_token: authUser.ws_token
       };
+      return user.value;
     }
     return null;
   };
+
+  // Initialize user state
+  getAuthenticatedUser();
 
   return {
     user,

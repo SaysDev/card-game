@@ -6,8 +6,9 @@ import { useWebSocket } from '@/composables/useWebSocket';
 import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/composables/useAuth';
 import { useInitials } from '@/composables/useInitials';
-import WebSocketService, { gameState } from '@/Services/WebSocketService';
+import { webSocketService, gameState, standardizePlayerObject } from '@/Services/WebSocketService';
 import { GameRoomService } from '@/Services/GameRoomService';
+import { MessageType } from '@/types/messageTypes';
 
 const props = defineProps<{
   game: {
@@ -44,7 +45,6 @@ const props = defineProps<{
 }>();
 
 const { toast } = useToast();
-const { isConnected, connect, joinRoom, leaveRoom, on } = useWebSocket();
 const { user } = useAuth();
 const { getInitials } = useInitials();
 
@@ -54,7 +54,10 @@ isCurrentPlayerInGame.value = props.isPlayer;
 const playerReady = computed({
   get: () => gameState.players.find(player => player.user_id === user.value?.id)?.status === 'ready' || false,
   set: (value) => {
-    WebSocketService.setReadyStatus(value);
+    webSocketService.send({
+      type: MessageType.SET_READY,
+      data: { ready: value }
+    });
   }
 });
 
@@ -77,7 +80,7 @@ const isRoomCreator = computed(() => {
 });
 
 const handleStartGame = () => {
-  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
+  if (!webSocketService.isConnected()) {
     toast({
       title: 'Błąd połączenia',
       description: 'Nie można rozpocząć gry - brak połączenia z serwerem.',
@@ -102,7 +105,10 @@ const handleStartGame = () => {
     });
     return;
   }
-  WebSocketService.startGame();
+  webSocketService.send({
+    type: MessageType.START_GAME,
+    room_id: gameState.roomId
+  });
   toast({
     title: 'Rozpoczynanie gry',
     description: 'Rozpoczynanie gry w toku...',
@@ -120,11 +126,11 @@ onMounted(() => {
     });
     return;
   }
-  WebSocketService.connect(String(authInfo.id), authInfo.name, authInfo.token || '');
+  webSocketService.connect();
 
   // Prevent duplicate listeners
-  WebSocketService.off('authenticated', handleAuthenticated);
-  WebSocketService.off('room_joined', handleRoomJoined);
+  webSocketService.off('authenticated', handleAuthenticated);
+  webSocketService.off('room_joined', handleRoomJoined);
 
   function handleAuthenticated() {
     if (!props.isPlayer && props.game?.id) {
@@ -145,7 +151,10 @@ onMounted(() => {
       }
       isCurrentPlayerInGame.value = true;
       const roomId = props.game.room_id?.toString() || props.game.id.toString();
-      WebSocketService.joinRoomWithUserInfo(roomId);
+      webSocketService.send({
+        type: MessageType.JOIN_ROOM,
+        data: { room_id: roomId }
+      });
     } else {
       console.log('User is not a player and game ID is missing.');
     }
@@ -159,24 +168,20 @@ onMounted(() => {
     });
     isCurrentPlayerInGame.value = true;
     if (data.players && Array.isArray(data.players)) {
-      gameState.players = data.players.map(p => ({
-        user_id: p.user_id ?? p.id ?? 0,
-        username: p.username ?? p.name ?? 'Gracz',
-        status: p.status === 'ready' ? 'ready' : 'not_ready',
-        ready: p.status === 'ready',
-        score: p.score ?? 0,
-        cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-      }));
+      gameState.players = data.players.map(standardizePlayerObject);
     }
     gameState.roomId = data.room_id;
     gameState.roomName = data.room_name;
-    WebSocketService.setReadyStatus(true);
+    webSocketService.send({
+      type: MessageType.SET_READY,
+      data: { ready: true }
+    });
   }
 
-  WebSocketService.on('authenticated', handleAuthenticated);
-  WebSocketService.on('room_joined', handleRoomJoined);
+  webSocketService.on('authenticated', handleAuthenticated);
+  webSocketService.on('room_joined', handleRoomJoined);
 
-  WebSocketService.on('game_started', () => {
+  webSocketService.on('game_started', () => {
     gameStarted.value = true;
     toast({
       title: 'Gra rozpoczęta',
@@ -184,21 +189,21 @@ onMounted(() => {
     });
   });
 
-  WebSocketService.on('player_joined', (data: any) => {
+  webSocketService.on('player_joined', (data: any) => {
     toast({
       title: 'Nowy gracz',
       description: `${data.player.username} dołączył do gry`,
     });
   });
 
-  WebSocketService.on('player_left', (data: any) => {
+  webSocketService.on('player_left', (data: any) => {
     toast({
       title: 'Gracz opuścił grę',
       description: `${data.username} opuścił grę`,
     });
   });
 
-  WebSocketService.on('server_error', (data: any) => {
+  webSocketService.on('server_error', (data: any) => {
     toast({
       title: 'Błąd serwera',
       description: data.message,
@@ -206,7 +211,7 @@ onMounted(() => {
     });
   });
 
-  WebSocketService.on('room_not_found', (data: any) => {
+  webSocketService.on('room_not_found', (data: any) => {
     console.error('Room not found error:', data);
     toast({
       title: 'Nie znaleziono pokoju',
@@ -215,7 +220,7 @@ onMounted(() => {
     });
   });
 
-  WebSocketService.on('room_reconnected', (data: { room_id: string; room_name: string; game_status: 'waiting' | 'playing' | 'ended'; players_list: any[]; game_state: any; }) => {
+  webSocketService.on('room_reconnected', (data: { room_id: string; room_name: string; game_status: 'waiting' | 'playing' | 'ended'; players_list: any[]; game_state: any; }) => {
     toast({
       title: 'Ponowne połączenie z pokojem',
       description: `Ponownie połączono z pokojem: ${data.room_name}`,
@@ -224,14 +229,7 @@ onMounted(() => {
     gameState.roomName = data.room_name;
     gameState.status = data.game_status;
     if (data.players_list && Array.isArray(data.players_list)) {
-      gameState.players = data.players_list.map(player => ({
-        user_id: player.user_id ?? player.id ?? 0,
-        username: player.username ?? player.name ?? 'Gracz',
-        status: player.status === 'ready' ? 'ready' : 'not_ready',
-        ready: player.status === 'ready',
-        score: player.score ?? 0,
-        cards_count: player.cards_count ?? (player.cards ? player.cards.length : 0)
-      }));
+      gameState.players = data.players_list.map(standardizePlayerObject);
     }
     if (data.game_state) {
       gameState.currentTurn = data.game_state.current_turn;
@@ -245,16 +243,16 @@ onMounted(() => {
     isCurrentPlayerInGame.value = true;
   });
 
-  WebSocketService.on('player_status_changed', (data) => {
+  webSocketService.on('player_status_changed', (data) => {
     console.log('[player_status_changed]', data, gameState.players);
     const playerIndex = gameState.players.findIndex(p => p.user_id === data.player_id);
     if (playerIndex !== -1) {
-      gameState.players[playerIndex].status = data.status;
-      gameState.players[playerIndex].ready = data.ready;
+      gameState.players[playerIndex].status = data.status === 'ready' ? 'ready' : 'not_ready';
+      gameState.players[playerIndex].ready = data.status === 'ready';
     }
   });
 
-  WebSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
+  webSocketService.on('ready_status_updated', (data: { ready: boolean; status: string; }) => {
     const myId = user.value?.id;
     const playerIndex = gameState.players.findIndex(p => p.user_id === myId);
     if (playerIndex !== -1) {
@@ -263,22 +261,15 @@ onMounted(() => {
     }
   });
 
-  WebSocketService.on('turn_changed', (data: { current_player_id: number; current_turn: number; }) => {
+  webSocketService.on('turn_changed', (data: { current_player_id: number; current_turn: number; }) => {
     gameState.currentTurn = data.current_turn;
     gameState.currentPlayerId = data.current_player_id;
     gameState.isYourTurn = gameState.currentPlayerId === authInfo.id;
   });
 
-  WebSocketService.on('game_state_updated', (data: any) => {
+  webSocketService.on('game_state_updated', (data: any) => {
     if (data.players_list) {
-      gameState.players = data.players_list.map((p: any) => ({
-        user_id: p.user_id ?? p.id ?? 0,
-        username: p.username ?? p.name ?? 'Gracz',
-        status: p.status === 'ready' ? 'ready' : 'not_ready',
-        ready: p.status === 'ready',
-        score: p.score ?? 0,
-        cards_count: p.cards_count ?? (p.cards ? p.cards.length : 0)
-      }));
+      gameState.players = data.players_list.map(standardizePlayerObject);
     }
     if (data.game_state) {
       gameState.currentTurn = data.game_state.current_turn;
@@ -303,90 +294,53 @@ const toggleReady = () => {
 
 // Game action handlers
 const handlePlayCard = (cardIndex: number) => {
-  // First, check if service exists and method is available
-  if (!WebSocketService || typeof WebSocketService.playCard !== 'function') {
-    console.error('WebSocketService.playCard is not available');
-    toast({
-      title: 'Błąd',
-      description: 'Nie można zagrać karty - problem z serwisem WebSocket',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Then check connection status
-  if (!WebSocketService.isConnectedAndReady()) {
-    const status = WebSocketService.getConnectionStatus();
-    console.error('Cannot play card: WebSocket connection issue', status);
+  if (!webSocketService.isConnected()) {
     toast({
       title: 'Błąd połączenia',
-      description: 'Nie można zagrać karty - utracono połączenie z serwerem. Spróbuj odświeżyć stronę.',
+      description: 'Nie można zagrać karty - brak połączenia z serwerem.',
       variant: 'destructive',
     });
     return;
   }
-
-  // If all checks pass, play the card
-  WebSocketService.playCard(cardIndex);
+  webSocketService.send({
+    type: MessageType.PLAY_CARD,
+    data: { card_index: cardIndex }
+  });
 };
 
 const handleDrawCard = () => {
-  // First, check if service exists and method is available
-  if (!WebSocketService || typeof WebSocketService.drawCard !== 'function') {
-    console.error('WebSocketService.drawCard is not available');
-    toast({
-      title: 'Błąd',
-      description: 'Nie można dobrać karty - problem z serwisem WebSocket',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Then check connection status
-  if (!WebSocketService.isConnectedAndReady()) {
-    console.error('Cannot draw card: WebSocket connection issue');
+  if (!webSocketService.isConnected()) {
     toast({
       title: 'Błąd połączenia',
-      description: 'Nie można dobrać karty - utracono połączenie z serwerem. Spróbuj odświeżyć stronę.',
+      description: 'Nie można dobrać karty - brak połączenia z serwerem.',
       variant: 'destructive',
     });
     return;
   }
-
-  // If all checks pass, draw the card
-  WebSocketService.drawCard();
+  webSocketService.send({
+    type: MessageType.DRAW_CARD,
+    data: {}
+  });
 };
 
 const handlePassTurn = () => {
-  // First, check if service exists and method is available
-  if (!WebSocketService || typeof WebSocketService.passTurn !== 'function') {
-    console.error('WebSocketService.passTurn is not available');
-    toast({
-      title: 'Błąd',
-      description: 'Nie można spasować - problem z serwisem WebSocket',
-      variant: 'destructive',
-    });
-    return;
-  }
-
-  // Then check connection status
-  if (!WebSocketService.isConnectedAndReady()) {
-    console.error('Cannot pass turn: WebSocket connection issue');
+  if (!webSocketService.isConnected()) {
     toast({
       title: 'Błąd połączenia',
-      description: 'Nie można spasować - utracono połączenie z serwerem. Spróbuj odświeżyć stronę.',
+      description: 'Nie można spasować - brak połączenia z serwerem.',
       variant: 'destructive',
     });
     return;
   }
-
-  // If all checks pass, pass the turn
-  WebSocketService.passTurn();
+  webSocketService.send({
+    type: MessageType.PASS_TURN,
+    data: {}
+  });
 };
 
 // Handle joining a game room
 const handleJoinRoom = () => {
-  if (!WebSocketService || !WebSocketService.isConnectedAndReady()) {
+  if (!webSocketService || !webSocketService.isConnected()) {
     toast({
       title: 'Błąd połączenia',
       description: 'Nie można dołączyć do gry - brak połączenia z serwerem.',
@@ -404,7 +358,10 @@ const handleJoinRoom = () => {
 
     // Use room_id if available in props.game, otherwise use game.id
     const roomIdToJoin = props.game.room_id || props.game.id.toString();
-    WebSocketService.joinRoomWithUserInfo(String(roomIdToJoin)); // Użyj metody z user info
+    webSocketService.send({
+      type: MessageType.JOIN_ROOM,
+      data: { room_id: roomIdToJoin }
+    });
   }
 };
 
@@ -413,28 +370,26 @@ const refreshConnection = () => {
   const authInfo = getAuthInfo();
   if (!authInfo) {
     toast({
-      title: 'Błąd',
-      description: 'Brak informacji o użytkowniku do ponownego połączenia',
+      title: 'Błąd autoryzacji',
+      description: 'Nie można nawiązać połączenia - brak zalogowanego użytkownika',
       variant: 'destructive',
     });
     return;
   }
-  if (WebSocketService) {
-    const status = WebSocketService.getConnectionStatus();
-    console.log('Current WebSocket status:', status);
-    if (!WebSocketService.isConnectedAndReady()) {
+  if (webSocketService) {
+    if (!webSocketService.isConnected()) {
       toast({
         title: 'Połączenie',
         description: 'Próba ponownego nawiązania połączenia z serwerem...',
       });
-      WebSocketService.disconnect();
+      webSocketService.disconnect();
       setTimeout(() => {
-        WebSocketService.connect(String(authInfo.id), authInfo.name, authInfo.ws_token || '');
+        webSocketService.connect();
       }, 500);
     } else {
       toast({
-        title: 'Połączenie',
-        description: 'Połączenie z serwerem aktywne',
+        title: 'Połączenie aktywne',
+        description: 'Połączenie z serwerem jest aktywne.',
       });
     }
   }
@@ -443,7 +398,10 @@ const refreshConnection = () => {
 // Handle player leaving a room
 const handleLeaveRoom = () => {
   if (gameState.roomId) {
-    WebSocketService.leaveRoom();
+    webSocketService.send({
+      type: MessageType.LEAVE_ROOM,
+      data: { room_id: gameState.roomId }
+    });
     // Update local state to reflect that the player has left
     isCurrentPlayerInGame.value = false;
 
@@ -464,10 +422,13 @@ const handleLeaveRoom = () => {
 // Clean up WebSocket connections when component is unmounted
 onBeforeUnmount(() => {
   if (gameState.roomId) {
-    WebSocketService.leaveRoom();
+    webSocketService.send({
+      type: MessageType.LEAVE_ROOM,
+      data: { room_id: gameState.roomId }
+    });
   }
   // Remove event listeners to prevent memory leaks
-  WebSocketService.disconnect();
+  webSocketService.disconnect();
 });
 
 function transformCardData(card: any) {
@@ -514,6 +475,17 @@ function getAuthInfo() {
   }
   return null;
 }
+
+// Update the connection status check
+const connectionStatus = computed(() => {
+  if (!webSocketService.isConnected()) {
+    return 'disconnected';
+  }
+  if (!gameState.isAuthenticated) {
+    return 'connecting';
+  }
+  return 'connected';
+});
 </script>
 
 <template>
@@ -559,9 +531,9 @@ function getAuthInfo() {
             <div
               class="px-2 py-1 rounded text-xs font-semibold flex items-center gap-1"
               :class="{
-                'bg-green-100 text-green-800': WebSocketService?.isConnectedAndReady() && gameState.isAuthenticated,
-                'bg-yellow-100 text-yellow-800': gameState.connected && !gameState.isAuthenticated,
-                'bg-red-100 text-red-800': !WebSocketService?.isConnectedAndReady()
+                'bg-green-100 text-green-800': connectionStatus === 'connected',
+                'bg-yellow-100 text-yellow-800': connectionStatus === 'connecting',
+                'bg-red-100 text-red-800': connectionStatus === 'disconnected'
               }"
               @click="refreshConnection"
               title="Kliknij, aby odświeżyć połączenie"
@@ -570,13 +542,13 @@ function getAuthInfo() {
               <span
                 class="w-2 h-2 rounded-full"
                 :class="{
-                  'bg-green-500': WebSocketService?.isConnectedAndReady() && gameState.isAuthenticated,
-                  'bg-yellow-500': gameState.connected && !gameState.isAuthenticated,
-                  'bg-red-500': !WebSocketService?.isConnectedAndReady()
+                  'bg-green-500': connectionStatus === 'connected',
+                  'bg-yellow-500': connectionStatus === 'connecting',
+                  'bg-red-500': connectionStatus === 'disconnected'
                 }"
               ></span>
-              {{ !WebSocketService?.isConnectedAndReady() ? 'Rozłączono' :
-                 !gameState.isAuthenticated ? 'Łączenie' : 'Połączono' }}
+              {{ connectionStatus === 'disconnected' ? 'Rozłączono' :
+                 connectionStatus === 'connecting' ? 'Łączenie' : 'Połączono' }}
             </div>
 
             <Link
